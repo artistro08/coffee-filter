@@ -1,0 +1,24 @@
+<Application
+    x:Class="CoffeeFilter.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:tray="using:H.NotifyIcon">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Tray Commands (the right-click menu itself lives in TrayMenu.cs) -->
+            <XamlUICommand x:Key="OpenCommand" />
+            <XamlUICommand x:Key="MenuCommand" />
+
+            <!-- Tray Icon -->
+            <tray:TaskbarIcon x:Key="TrayIcon"
+                              ToolTipText="Coffee Filter"
+                              NoLeftClickDelay="True"
+                              LeftClickCommand="{StaticResource OpenCommand}"
+                              RightClickCommand="{StaticResource MenuCommand}" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

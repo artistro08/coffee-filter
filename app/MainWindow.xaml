@@ -1,0 +1,197 @@
+<Window
+    x:Class="CoffeeFilter.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls"
+    xmlns:local="using:CoffeeFilter"
+    Title="Coffee Filter">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid.Resources>
+            <!-- Section Header -->
+            <Style x:Key="SectionHeader" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongTextBlockStyle}">
+                <Setter Property="Margin" Value="1,28,0,6" />
+            </Style>
+        </Grid.Resources>
+
+        <!-- Title Bar -->
+        <TitleBar x:Name="AppTitleBar" Title="Coffee Filter" BackRequested="OnBackRequested">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="ms-appx:///Assets/coffee.png" />
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <ScrollViewer x:Name="PageScroll" Grid.Row="1">
+            <StackPanel MaxWidth="1000" Padding="36,8,36,36" Spacing="4">
+
+                <!-- Page Title (a breadcrumb, like Windows Settings, so sub-pages lead back) -->
+                <BreadcrumbBar x:Name="Breadcrumb" Margin="0,0,0,8" ItemClicked="OnBreadcrumbClicked">
+                    <BreadcrumbBar.Resources>
+                        <x:Double x:Key="BreadcrumbBarItemThemeFontSize">28</x:Double>
+                        <x:Double x:Key="BreadcrumbBarChevronFontSize">14</x:Double>
+                        <FontWeight x:Key="BreadcrumbBarItemFontWeight">SemiBold</FontWeight>
+                    </BreadcrumbBar.Resources>
+                </BreadcrumbBar>
+
+                <!-- Messages -->
+                <InfoBar x:Name="Message" IsOpen="False" IsClosable="True" />
+                <StackPanel x:Name="Loading" Orientation="Horizontal" Spacing="12" Margin="0,16">
+                    <ProgressRing IsActive="True" Width="20" Height="20" />
+                    <TextBlock Text="Loading filter lists…" VerticalAlignment="Center" />
+                </StackPanel>
+
+                <StackPanel x:Name="MainContent" Spacing="4" Visibility="Collapsed">
+
+                    <!-- Protection -->
+                    <TextBlock Text="Protection" Style="{StaticResource SectionHeader}" />
+                    <local:ClickCard x:Name="BlockingCard" Header="Ad blocking" IsClickEnabled="True" Click="OnBlockingCardClicked" Invoked="OnBlockingCardInvoked">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xEA18;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ToggleSwitch x:Name="BlockingSwitch" AutomationProperties.Name="Ad blocking" Toggled="OnBlockingToggled" />
+                    </local:ClickCard>
+                    <toolkit:SettingsCard x:Name="CertCard" Header="Certificate">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xEB95;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <ProgressRing x:Name="CertRing" Width="20" Height="20" IsActive="False" Visibility="Collapsed" />
+                            <Button x:Name="CertButton" Click="OnCertClicked" />
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                    <!-- /Protection -->
+
+                    <!-- Filter Lists -->
+                    <TextBlock Text="Filter lists" Style="{StaticResource SectionHeader}" />
+                    <toolkit:SettingsCard Header="Update lists" Description="Download the newest version of every list that's turned on.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE72C;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <ProgressRing x:Name="UpdateRing" Width="20" Height="20" IsActive="False" Visibility="Collapsed" />
+                            <Button x:Name="UpdateButton" Content="Update now" Click="OnUpdateClicked" />
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="Add a filter list" Description="Any list in Adblock Plus or hosts file format.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE710;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <ProgressRing x:Name="AddListRing" Width="20" Height="20" IsActive="False" Visibility="Collapsed" />
+                            <Button x:Name="AddListButton" Content="Add list" Click="OnAddListClicked" />
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                    <StackPanel x:Name="ListGroups" Spacing="4" />
+                    <!-- /Filter Lists -->
+
+                    <!-- Userscripts -->
+                    <TextBlock Text="Userscripts" Style="{StaticResource SectionHeader}" />
+                    <toolkit:SettingsExpander x:Name="UserscriptsCard"
+                                              Header="Add a userscript"
+                                              Description="Add only user scripts that you trust.">
+                        <toolkit:SettingsExpander.HeaderIcon>
+                            <FontIcon Glyph="&#xE943;" />
+                        </toolkit:SettingsExpander.HeaderIcon>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <ProgressRing x:Name="AddScriptRing" Width="20" Height="20" IsActive="False" Visibility="Collapsed" />
+                            <Button x:Name="AddScriptButton" Content="Add userscript" Click="OnAddUserscriptClicked" />
+                        </StackPanel>
+                    </toolkit:SettingsExpander>
+                    <!-- /Userscripts -->
+
+                    <!-- Excluded Sites -->
+                    <TextBlock Text="Excluded sites" Style="{StaticResource SectionHeader}" />
+                    <toolkit:SettingsExpander x:Name="ExclusionsCard"
+                                              Header="Excluded sites"
+                                              Description="These are never decrypted or filtered. Add any site or app that breaks.">
+                        <toolkit:SettingsExpander.HeaderIcon>
+                            <FontIcon Glyph="&#xE8D7;" />
+                        </toolkit:SettingsExpander.HeaderIcon>
+                        <Button Content="Add site" Click="OnAddExclusionClicked" />
+                    </toolkit:SettingsExpander>
+                    <!-- /Excluded Sites -->
+
+                    <!-- Connection Problems -->
+                    <StackPanel x:Name="ProblemsSection" Spacing="4" Visibility="Collapsed">
+                        <TextBlock Text="Connection problems" Style="{StaticResource SectionHeader}" />
+                        <toolkit:SettingsExpander x:Name="ProblemsCard"
+                                                  Header="Apps that couldn't connect"
+                                                  IsExpanded="True">
+                            <toolkit:SettingsExpander.HeaderIcon>
+                                <FontIcon Glyph="&#xE7BA;" />
+                            </toolkit:SettingsExpander.HeaderIcon>
+                            <Button Content="Clear" Click="OnClearProblemsClicked" />
+                        </toolkit:SettingsExpander>
+                    </StackPanel>
+                    <!-- /Connection Problems -->
+
+                    <!-- App -->
+                    <TextBlock Text="App" Style="{StaticResource SectionHeader}" />
+                    <toolkit:SettingsCard Header="Show tray icon"
+                                          Description="When the tray icon is hidden, open the app from the start menu to bring it back.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE7C4;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ToggleSwitch x:Name="TraySwitch" AutomationProperties.Name="Show tray icon" Toggled="OnTrayToggled" />
+                    </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="Quit Coffee Filter">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE7E8;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <Button Content="Quit" Click="OnQuitClicked" />
+                    </toolkit:SettingsCard>
+                    <!-- /App -->
+
+                    <!-- About -->
+                    <TextBlock Text="About" Style="{StaticResource SectionHeader}" />
+                    <toolkit:SettingsExpander x:Name="AboutCard" Header="Coffee Filter">
+                        <toolkit:SettingsExpander.HeaderIcon>
+                            <ImageIcon Source="ms-appx:///Assets/coffee.png" />
+                        </toolkit:SettingsExpander.HeaderIcon>
+                        <toolkit:SettingsExpander.Items>
+                            <toolkit:SettingsCard Header="Built by Devin Green (Artistro08)">
+                                <HyperlinkButton NavigateUri="https://github.com/artistro08">
+                                    github.com/artistro08
+                                </HyperlinkButton>
+                            </toolkit:SettingsCard>
+                            <toolkit:SettingsCard Header="Built with"
+                                                  Description="hudsucker (HTTPS proxy), adblock-rust by Brave (filter engine), WinUI 3, and Windows Community Toolkit." />
+                            <toolkit:SettingsCard Header="Filter lists"
+                                                  Description="Lists come from their authors (EasyList, AdGuard, Zen, and others). Coffee Filter only downloads and applies them." />
+                        </toolkit:SettingsExpander.Items>
+                    </toolkit:SettingsExpander>
+                    <!-- /About -->
+
+                </StackPanel>
+
+                <!-- Ad Blocking Log (sub-page) -->
+                <StackPanel x:Name="LogView" Spacing="4" Visibility="Collapsed">
+                    <toolkit:SettingsCard x:Name="LogSummary" Header="Live log" Description="Blocked requests show up here as they happen, newest first.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE81C;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <Button Content="Clear" Click="OnClearLogClicked" />
+                    </toolkit:SettingsCard>
+                    <StackPanel x:Name="LogEntries" Spacing="4">
+                        <!-- New entries slide in at the top, older ones move down -->
+                        <StackPanel.ChildrenTransitions>
+                            <TransitionCollection>
+                                <AddDeleteThemeTransition />
+                            </TransitionCollection>
+                        </StackPanel.ChildrenTransitions>
+                    </StackPanel>
+                </StackPanel>
+                <!-- /Ad Blocking Log -->
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>

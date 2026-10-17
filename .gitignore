@@ -1,0 +1,24 @@
+# Build output
+core/target/
+app/bin/
+app/obj/
+app/AppPackages/
+tests/*/bin/
+tests/*/obj/
+.vs/
+
+# Never commit certificates or keys
+*.cer
+*.crt
+*.pem
+*.key
+*.dpapi
+*.pfx
+*.msix
+
+# Tooling and test output
+*.user
+*.binlog
+TestResults/
+.idea/
+*.profraw

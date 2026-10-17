@@ -1,0 +1,27 @@
+<!-- Coffee Filter tray icon: three stacked fluted coffee filters, mono Fluent regular outline style (currentColor). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<defs>
+<mask id="m0" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"/>
+<path d="M8.200,17.500 Q7.000,17.500 6.495,16.300 L3.000,8.000 C3.225,6.310 7.275,6.310 7.500,8.000 C7.725,6.310 11.775,6.310 12.000,8.000 C12.225,6.310 16.275,6.310 16.500,8.000 C16.725,6.310 20.775,6.310 21.000,8.000 L17.505,16.300 Q17.000,17.500 15.800,17.500 Z" fill="#000" stroke="#000" stroke-width="3.00" stroke-linejoin="round"/>
+<path d="M8.200,21.700 Q7.000,21.700 6.495,20.500 L3.000,12.200 C3.225,10.510 7.275,10.510 7.500,12.200 C7.725,10.510 11.775,10.510 12.000,12.200 C12.225,10.510 16.275,10.510 16.500,12.200 C16.725,10.510 20.775,10.510 21.000,12.200 L17.505,20.500 Q17.000,21.700 15.800,21.700 Z" fill="#000" stroke="#000" stroke-width="3.00" stroke-linejoin="round"/>
+</mask>
+<mask id="m1" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"/>
+<path d="M8.200,21.700 Q7.000,21.700 6.495,20.500 L3.000,12.200 C3.225,10.510 7.275,10.510 7.500,12.200 C7.725,10.510 11.775,10.510 12.000,12.200 C12.225,10.510 16.275,10.510 16.500,12.200 C16.725,10.510 20.775,10.510 21.000,12.200 L17.505,20.500 Q17.000,21.700 15.800,21.700 Z" fill="#000" stroke="#000" stroke-width="3.00" stroke-linejoin="round"/>
+</mask>
+</defs>
+<g mask="url(#m0)"><path d="M8.200,13.300 Q7.000,13.300 6.495,12.100 L3.000,3.800 C3.225,2.110 7.275,2.110 7.500,3.800 C7.725,2.110 11.775,2.110 12.000,3.800 C12.225,2.110 16.275,2.110 16.500,3.800 C16.725,2.110 20.775,2.110 21.000,3.800 L17.505,12.100 Q17.000,13.300 15.800,13.300 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M7.860,5.510 L9.140,11.590" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12.000,5.510 L12.000,11.590" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16.140,5.510 L14.860,11.590" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<g mask="url(#m1)"><path d="M8.200,17.500 Q7.000,17.500 6.495,16.300 L3.000,8.000 C3.225,6.310 7.275,6.310 7.500,8.000 C7.725,6.310 11.775,6.310 12.000,8.000 C12.225,6.310 16.275,6.310 16.500,8.000 C16.725,6.310 20.775,6.310 21.000,8.000 L17.505,16.300 Q17.000,17.500 15.800,17.500 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M7.860,9.710 L9.140,15.790" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12.000,9.710 L12.000,15.790" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16.140,9.710 L14.860,15.790" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<g><path d="M8.200,21.700 Q7.000,21.700 6.495,20.500 L3.000,12.200 C3.225,10.510 7.275,10.510 7.500,12.200 C7.725,10.510 11.775,10.510 12.000,12.200 C12.225,10.510 16.275,10.510 16.500,12.200 C16.725,10.510 20.775,10.510 21.000,12.200 L17.505,20.500 Q17.000,21.700 15.800,21.700 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M7.860,13.910 L9.140,19.990" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12.000,13.910 L12.000,19.990" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16.140,13.910 L14.860,19.990" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- App -->
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+        <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+        <RootNamespace>CoffeeFilter</RootNamespace>
+        <Version>0.1.0.13</Version>
+        <ApplicationManifest>app.manifest</ApplicationManifest>
+        <Platforms>x64</Platforms>
+        <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+        <UseWinUI>true</UseWinUI>
+        <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+        <ApplicationIcon>Assets\coffee.ico</ApplicationIcon>
+    </PropertyGroup>
+
+    <!-- Performance: Native AOT (no JIT, fast start, low memory), trimmed, lean runtime -->
+    <PropertyGroup>
+        <PublishAot>true</PublishAot>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <OptimizationPreference>Size</OptimizationPreference>
+        <InvariantGlobalization>true</InvariantGlobalization>
+        <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+        <TieredPGO>false</TieredPGO>
+        <EventSourceSupport>false</EventSourceSupport>
+        <DebuggerSupport Condition="'$(Configuration)' == 'Release'">false</DebuggerSupport>
+        <!-- Error messages and stack traces stay on, so app-errors.log is useful -->
+    </PropertyGroup>
+
+    <!-- MSIX Package (signed with the local "CN=Devin Green" cert in CurrentUser\My) -->
+    <PropertyGroup>
+        <EnableMsixTooling>true</EnableMsixTooling>
+        <GenerateAppxPackageOnBuild Condition="'$(Configuration)' == 'Release'">true</GenerateAppxPackageOnBuild>
+        <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+        <PackageCertificateThumbprint>731870AC454C0A65DBFBF7C72B6A28CA10FB346B</PackageCertificateThumbprint>
+        <AppxBundle>Never</AppxBundle>
+        <AppxPackageDir>$(MSBuildThisFileDirectory)AppPackages\</AppxPackageDir>
+        <GenerateTestArtifacts>false</GenerateTestArtifacts>
+    </PropertyGroup>
+
+    <!-- Packages -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+        <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+        <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+        <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
+    </ItemGroup>
+
+    <!-- Assets -->
+    <ItemGroup>
+        <Content Include="Assets\coffee.ico" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\coffee.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\tray-white.ico" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\tray-black.ico" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <!-- Rust Core, built first with cargo build in release mode -->
+    <ItemGroup>
+        <None Include="..\core\target\release\coffee-filter-core.exe"
+              Link="coffee-filter-core.exe"
+              CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+</Project>

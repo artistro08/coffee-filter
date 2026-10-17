@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+    IgnorableNamespaces="uap rescap desktop6">
+
+    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.0.13" />
+
+    <Properties>
+        <DisplayName>Coffee Filter</DisplayName>
+        <PublisherDisplayName>Devin Green (Artistro08)</PublisherDisplayName>
+        <Logo>Assets\StoreLogo.png</Logo>
+        <!-- The system proxy lives in HKCU and must be changed for real, not in a private copy -->
+        <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
+        <!-- Keep the CA, config, and lists in %LOCALAPPDATA%\CoffeeFilter like the unpackaged app -->
+        <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+    </Properties>
+
+    <Dependencies>
+        <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    </Dependencies>
+
+    <Resources>
+        <Resource Language="en-us" />
+    </Resources>
+
+    <Applications>
+        <Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="$targetentrypoint$">
+            <uap:VisualElements
+                DisplayName="Coffee Filter"
+                Description="Local HTTPS ad blocker"
+                BackgroundColor="transparent"
+                Square150x150Logo="Assets\Square150x150Logo.png"
+                Square44x44Logo="Assets\Square44x44Logo.png">
+                <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+                <uap:SplashScreen Image="Assets\SplashScreen.png" />
+            </uap:VisualElements>
+
+            <!-- Install Buttons On Userscript Pages Open The App -->
+            <Extensions>
+                <uap:Extension Category="windows.protocol">
+                    <uap:Protocol Name="coffee-filter">
+                        <uap:DisplayName>Coffee Filter</uap:DisplayName>
+                    </uap:Protocol>
+                </uap:Extension>
+            </Extensions>
+        </Application>
+    </Applications>
+
+    <Capabilities>
+        <rescap:Capability Name="runFullTrust" />
+        <rescap:Capability Name="unvirtualizedResources" />
+    </Capabilities>
+</Package>

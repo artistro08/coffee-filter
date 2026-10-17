@@ -1,0 +1,6 @@
+# Line endings are normalized in the repo; files check out as your platform expects
+* text=auto
+
+# Binary assets
+*.ico binary
+*.png binary
