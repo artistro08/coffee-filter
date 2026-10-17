@@ -121,6 +121,39 @@ public sealed class CoreClientTests : IDisposable
     }
 
     [Fact]
+    public async Task AddExclusionAppendsToTheSavedList()
+    {
+        await _core.WaitReadyAsync();
+        await _core.SendAsync("set_exclusions", new JsonObject { ["hosts"] = new JsonArray("bank.com") });
+
+        var added = await _core.SendAsync("add_exclusion", new JsonObject { ["host"] = " Ads.Example.com " });
+        Assert.True(added.Ok, added.Error);
+        Assert.Equal(["ads.example.com", "bank.com"], added.Status!.Exclusions);
+
+        var junk = await _core.SendAsync("add_exclusion", new JsonObject { ["host"] = "not a site!" });
+        Assert.False(junk.Ok);
+        Assert.Equal(2, junk.Status!.Exclusions.Count);
+    }
+
+    [Fact]
+    public async Task ExcludedAppsAddAndRemove()
+    {
+        await _core.WaitReadyAsync();
+
+        var program = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Tool", ["path"] = @"C:\Tools\tool.exe" });
+        Assert.True(program.Ok, program.Error);
+        var store = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Store", ["package"] = "Microsoft.WindowsStore_8wekyb3d8bbwe" });
+        Assert.True(store.Ok, store.Error);
+        Assert.Equal(["Store", "Tool"], store.Status!.ExcludedApps.Select(a => a.Name));
+
+        var bad = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Notes", ["path"] = @"C:\notes.txt" });
+        Assert.False(bad.Ok);
+
+        var removed = await _core.SendAsync("remove_excluded_app", new JsonObject { ["id"] = "microsoft.windowsstore_8wekyb3d8bbwe" });
+        Assert.Equal(["Tool"], removed.Status!.ExcludedApps.Select(a => a.Name));
+    }
+
+    [Fact]
     public async Task NonAsciiNamesSurviveTheRoundTrip()
     {
         await _core.WaitReadyAsync();

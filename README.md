@@ -4,9 +4,21 @@ A local HTTPS ad blocker for Windows, in the spirit of Zen. A small Rust proxy b
 
 ## Introduction
 
-When blocking is on, Windows sends web traffic through a proxy running on your own PC (`127.0.0.1:18228`). It does that with a PAC script the proxy serves itself: web traffic (`http`/`https`) goes to the proxy, while this PC, your home network, and every other kind of connection go direct. To read HTTPS traffic, the proxy uses a certificate authority (CA) made just for your PC. Requests matching a filter list get a `403` and never reach the ad server; blocked pages show "Blocked by Coffee Filter".
+When blocking is on, Windows sends web traffic through a proxy running on your own PC (`127.0.0.1:18228`). It does that with a PAC script the proxy serves itself: web traffic (`http`/`https`) goes to the proxy, while this PC, your home network, and every other kind of connection go direct. To read HTTPS traffic, the proxy uses a certificate authority (CA) made just for your PC. Requests matching a filter list get a `403` and never reach the ad server.
 
 Filtering uses [adblock-rust](https://github.com/brave/adblock-rust), the engine inside Brave. Lists are shown in groups like Zen's (Ads, Privacy, Malware, General, Digital wellbeing, Regional, Custom) using each list's `kind` in `config.json`. It starts with five general lists, and you can add your own in Adblock Plus or hosts file format (`https://` addresses only, so a list can't be tampered with on the way).
+
+### Blocked Pages
+
+When a whole page is blocked, you get a Windows 11 styled page in your own accent color (read from Windows, since browsers don't share it) showing the address, with **Go back** and **Exclude this site**. Exclude opens Coffee Filter, which asks before adding the site to your excluded sites.
+
+### Short Links
+
+Clicking a `t.co` link doesn't send your browser to t.co. Coffee Filter asks t.co itself where the link goes (without your cookies or the page you came from), removes tracking parameters like `utm_*` and `fbclid` from the destination, and sends the browser straight there.
+
+### Built-in Fixes
+
+Coffee Filter carries a few rules of its own for ads the public lists don't catch yet. Today that's X's promoted posts, which are now labeled "Ad" instead of "Promoted".
 
 ### Cosmetic Filtering
 
@@ -45,9 +57,10 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 - **Web pages can't reach your PC or home network through it.** A public site name that points at a local address (a trick called DNS rebinding) is refused, for web requests, secure tunnels on other ports, and WebSockets alike, so a page can't read your router, NAS, or local apps through the proxy. Names that are local to begin with (`nas.local`, `192.168.1.1`) and excluded sites work as usual.
 - **No other certificate goes through its admin prompt.** Before any admin step, Coffee Filter checks that `ca.cer` is a Coffee Filter certificate with today's limits, so a program that swaps in some other CA, or a copy of a real root, can't get it trusted or removed through the prompt you expect. (A program already running as you could make a look-alike, but it could also read the real key; see the trust boundary below.)
 - **Injected code stays in its tag.** Anything in a filter rule or userscript that could end Coffee Filter's `<script>` early (`</script` in any letter case, `<!--`) is neutralized, so a list can't add code to pages beyond its scriptlets.
-- **Web pages can't raise an admin prompt.** When an Install button opens the app, it skips the automatic certificate setup, and the Add button stays off for a second so a stray keystroke can't accept it.
+- **Web pages can't raise an admin prompt.** When an Install or Exclude button on a web page opens the app, it skips the automatic certificate setup, and the Add or Exclude button stays off for a second so a stray keystroke can't accept it. A site name from an Exclude link must look like a site name before it's shown.
 - **No control port.** The app talks to the core over a private pipe (stdin/stdout).
 - **Real certificates are still checked.** The proxy verifies every site with Windows' own certificate check, exactly like your browser would (work or custom roots included). Sites with bad certificates fail instead of being silently trusted.
+- **Excluded apps are never decrypted or filtered.** Add a program (`.exe`) or an installed Microsoft Store app under **Exclusions**, and every connection it makes passes through untouched. Coffee Filter asks Windows which program owns each new connection (only while the list isn't empty), and matches Store apps by package family name, so an exclusion survives app updates.
 - **Your home network is never decrypted.** Private and local addresses (`192.168.x.x`, `10.x.x.x`, `*.local`, Tailscale `100.64.x.x`, ...) are tunneled untouched, as are excluded sites. Plain `http://` requests to excluded sites are left alone too: no blocking, no page changes.
 - **Crash safe.** Your old proxy settings are saved first. They're restored when blocking stops, when the app quits or crashes, when Windows shuts down or you sign out, and otherwise on the next launch. If the core crashes, the app restarts it and turns blocking back on.
 
@@ -69,6 +82,7 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 - Windows 10 2004 (build 19041) or newer
 - [Rust](https://rustup.rs/)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- [Windows SDK](https://developer.microsoft.com/windows/downloads/windows-sdk/) (its `rc.exe` puts the icon into the core)
 
 ### Build
 
@@ -103,6 +117,11 @@ cargo test --release -- --ignored
 # App-to-core link (CoreClient) against the real core
 cd ../tests/CoffeeFilter.Tests
 dotnet test
+
+# The whole window through Windows UI Automation, against the installed app.
+# Opens pages, groups, and dialogs (always cancelled); changes no settings.
+cd ../CoffeeFilter.UITests
+dotnet test
 ```
 
 ### Use
@@ -119,7 +138,8 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - **Apps with certificate pinning** (some games, banking apps, Discord, etc.) will fail through the proxy. They show up under **Connection problems** with an **Exclude** button.
 - **Strict revocation checking**: tools that hard-fail when revocation can't be checked (like Windows `curl` without `--ssl-no-revoke`) will fail. Browsers don't.
 - **Windows Update and Microsoft Store downloads always connect directly.** Windows Update uses your proxy setting and refuses connections it can't verify end to end, so Microsoft's update and Store servers (`*.mp.microsoft.com`, `*.update.microsoft.com`, `*.windowsupdate.com`, ...) are never sent through or decrypted by Coffee Filter.
-- **Microsoft Store apps aren't filtered.** Windows doesn't let sandboxed Store apps (the Store, Xbox, Photos, ...) connect to `127.0.0.1`, so they go direct instead of through the proxy.
+- **Sandboxed Store apps aren't filtered.** Windows doesn't let sandboxed Store apps (the Store, Xbox, Photos, ...) connect to `127.0.0.1`, so they go direct instead of through the proxy. Desktop apps from the Store (Spotify, WhatsApp, and other full-trust packages) do go through it, and can be added to **Excluded apps**.
+- **Windhawk can freeze the Coffee Filter window.** With Windhawk injecting into Coffee Filter, opening an app from a launcher like Raycast while Coffee Filter's window has focus can leave the window not responding (blocking keeps running). Add `CoffeeFilter.exe` to Windhawk's exclusions to avoid it.
 - **A fixed work proxy** (`ProxyEnable=1`) isn't used while blocking is on; traffic goes direct through Coffee Filter instead.
 - **Your account is the trust boundary.** Any program running as you can change files in `%LOCALAPPDATA%\CoffeeFilter` (lists, userscripts) and so add code to pages, or decrypt the CA key. The CA is trusted by the whole PC while its key is readable by your account, so it's only as safe as your account. That's true of any app like this.
 - **WebSockets go direct** from browsers (the PAC sends `ws:`/`wss:` straight out), so filter rules don't apply to them.
@@ -136,15 +156,19 @@ That's it! Closing the window keeps blocking running in the background, with a t
     - `cosmetic.rs` — page injection, AdGuard syntax translation, scriptlet library, CSP nonces
     - `procedural.js` — in-page runner for advanced cosmetic rules
     - `userscripts.rs`, `userscripts.js` — userscript downloads, `@match` rules, and the in-page `GM_*` helpers
+    - `apps.rs` — excluded apps: which program owns a connection
+    - `blocked.html` — the blocked page
+- `core/build.rs` — puts the coffee icon into `coffee-filter-core.exe`
     - `problems.rs` — tracks connections Coffee Filter broke
     - `sysproxy.rs` — PAC script and Windows proxy settings with backup and restore
     - `config.rs` — settings and atomic file writes
 - `app/` — WinUI 3 app, packaged as MSIX
 - `tests/CoffeeFilter.Tests/` — C# tests for the app-to-core link
+- `tests/CoffeeFilter.UITests/` — UI tests that drive the installed app (FlaUI)
 
 ### Files Used
 
-- `%LOCALAPPDATA%\CoffeeFilter\config.json` — lists, userscripts, exclusions, port (a damaged copy is kept as `config.json.bad`)
+- `%LOCALAPPDATA%\CoffeeFilter\config.json` — lists, userscripts, excluded sites and apps, port (a damaged copy is kept as `config.json.bad`)
 - `%LOCALAPPDATA%\CoffeeFilter\ca.cer` — public CA certificate
 - `%LOCALAPPDATA%\CoffeeFilter\ca.key.dpapi` — encrypted CA private key
 - `%LOCALAPPDATA%\CoffeeFilter\lists\` — cached filter lists

@@ -68,6 +68,16 @@
                             <Button x:Name="CertButton" Click="OnCertClicked" />
                         </StackPanel>
                     </toolkit:SettingsCard>
+                    <local:ClickCard x:Name="ProblemsCard"
+                                     Header="Connection problems"
+                                     Description="No problems so far"
+                                     IsClickEnabled="True"
+                                     Click="OnProblemsCardClicked"
+                                     Invoked="OnProblemsCardInvoked">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE7BA;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                    </local:ClickCard>
                     <!-- /Protection -->
 
                     <!-- Filter Lists -->
@@ -108,33 +118,42 @@
                     </toolkit:SettingsExpander>
                     <!-- /Userscripts -->
 
-                    <!-- Excluded Sites -->
-                    <TextBlock Text="Excluded sites" Style="{StaticResource SectionHeader}" />
+                    <!-- Exclusions -->
+                    <TextBlock Text="Exclusions" Style="{StaticResource SectionHeader}" />
                     <toolkit:SettingsExpander x:Name="ExclusionsCard"
                                               Header="Excluded sites"
-                                              Description="These are never decrypted or filtered. Add any site or app that breaks.">
+                                              Description="These are never decrypted or filtered. Add any site that breaks.">
                         <toolkit:SettingsExpander.HeaderIcon>
                             <FontIcon Glyph="&#xE8D7;" />
                         </toolkit:SettingsExpander.HeaderIcon>
                         <Button Content="Add site" Click="OnAddExclusionClicked" />
                     </toolkit:SettingsExpander>
-                    <!-- /Excluded Sites -->
+                    <toolkit:SettingsExpander x:Name="ExcludedAppsCard"
+                                              Header="Excluded apps"
+                                              Description="Apps whose connections are never decrypted or filtered. Add any app that breaks.">
+                        <toolkit:SettingsExpander.HeaderIcon>
+                            <FontIcon Glyph="&#xED35;" />
+                        </toolkit:SettingsExpander.HeaderIcon>
+                        <DropDownButton Content="Add app" AutomationProperties.Name="Add app">
+                            <DropDownButton.Flyout>
+                                <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                    <MenuFlyoutItem Text="Program (.exe)…" Click="OnAddProgramClicked">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE7AC;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Text="Microsoft Store app…" Click="OnAddStoreAppClicked">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE719;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                </MenuFlyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+                    </toolkit:SettingsExpander>
+                    <!-- /Exclusions -->
 
-                    <!-- Connection Problems -->
-                    <StackPanel x:Name="ProblemsSection" Spacing="4" Visibility="Collapsed">
-                        <TextBlock Text="Connection problems" Style="{StaticResource SectionHeader}" />
-                        <toolkit:SettingsExpander x:Name="ProblemsCard"
-                                                  Header="Apps that couldn't connect"
-                                                  IsExpanded="True">
-                            <toolkit:SettingsExpander.HeaderIcon>
-                                <FontIcon Glyph="&#xE7BA;" />
-                            </toolkit:SettingsExpander.HeaderIcon>
-                            <Button Content="Clear" Click="OnClearProblemsClicked" />
-                        </toolkit:SettingsExpander>
-                    </StackPanel>
-                    <!-- /Connection Problems -->
-
-                    <!-- App -->
+<!-- App -->
                     <TextBlock Text="App" Style="{StaticResource SectionHeader}" />
                     <toolkit:SettingsCard Header="Show tray icon"
                                           Description="When the tray icon is hidden, open the app from the start menu to bring it back.">
@@ -191,6 +210,19 @@
                     </StackPanel>
                 </StackPanel>
                 <!-- /Ad Blocking Log -->
+
+                <!-- Connection Problems (sub-page) -->
+                <StackPanel x:Name="ProblemsView" Spacing="4" Visibility="Collapsed">
+                    <toolkit:SettingsCard Header="Apps that couldn't connect"
+                                          Description="These refused Coffee Filter's certificate. Exclude one to let it connect again.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE7BA;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <Button Content="Clear" Click="OnClearProblemsClicked" />
+                    </toolkit:SettingsCard>
+                    <StackPanel x:Name="ProblemsList" Spacing="4" />
+                </StackPanel>
+                <!-- /Connection Problems -->
             </StackPanel>
         </ScrollViewer>
     </Grid>

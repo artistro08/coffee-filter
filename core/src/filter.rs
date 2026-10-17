@@ -1,7 +1,8 @@
 //! Filter lists, the blocking engine, and the hudsucker request handler.
 
 use crate::{
-    config::{Config, FilterList, data_dir, write_atomic},
+    apps,
+    config::{Config, ExcludedApp, FilterList, data_dir, write_atomic},
     cosmetic, sysproxy, userscripts,
 };
 use adblock::{Engine, lists::{FilterFormat, FilterSet, ParseOptions}, request::Request as AdRequest, resources::PermissionMask};
@@ -37,6 +38,11 @@ pub struct Shared {
     pub blocked:     AtomicU64,
     pub allowed:     AtomicU64,
     pub log:         Log,
+    /// Resolves short links (see SHORTENERS).
+    pub resolver:    reqwest::Client,
+    pub apps:        RwLock<Arc<Vec<ExcludedApp>>>,
+    /// Per connection: does it come from an excluded app?
+    pub app_cache:   apps::Cache,
 }
 
 /// Recently blocked requests for the app's live log. Recording is off (one atomic read per
@@ -197,6 +203,7 @@ fn compile(config: &Config, library: Option<PathBuf>) -> (Engine, usize) {
                     add_list(&mut set, text, list.trusted);
                 }
             }
+            add_list(&mut set, BUILTIN_RULES.to_string(), false);
             let engine = Engine::new_with_filter_set(set);
 
             if let Ok(dir) = data_dir() {
@@ -229,7 +236,7 @@ fn engine_key(config: &Config) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         // Bump when the way lists are compiled changes, so old engine.dat files are rebuilt
-        + "\nformat:3"
+        + "\nformat:4"
 }
 
 fn load_cached_engine(key: &str) -> Option<(Engine, usize)> {
@@ -243,6 +250,14 @@ fn load_cached_engine(key: &str) -> Option<(Engine, usize)> {
     engine.deserialize(&fs::read(dir.join("engine.dat")).ok()?).ok()?;
     Some((engine, rules.parse().ok()?))
 }
+
+/// Coffee Filter's own fixes, for ads the public lists don't catch yet. Always on.
+///
+/// X marks promoted posts with a small "Ad" label (the lists still look for "Promoted"), and
+/// keeps ad slots in `placementTracking` cells.
+const BUILTIN_RULES: &str = r#"x.com,twitter.com##div[data-testid="cellInnerDiv"]:has(div[data-testid="placementTracking"])
+x.com,twitter.com##article[data-testid="tweet"] span:has-text(/^Ad$/):upward(div[data-testid="cellInnerDiv"])
+"#;
 
 /// Add one list, detecting hosts-file format (`0.0.0.0 domain`) from its first rule.
 /// Network and cosmetic rules are both kept; AdGuard-only syntax is translated first.
@@ -376,9 +391,117 @@ fn local_refused() -> RequestOrResponse {
         .into()
 }
 
-/// What a blocked page shows, instead of a blank tab.
-const BLOCKED_PAGE: &str = "<!DOCTYPE html><meta charset=\"utf-8\"><title>Blocked</title>\
-<body style=\"font:16px system-ui,sans-serif;margin:3em;color:#555\">Blocked by Coffee Filter.";
+/// What a blocked page shows, instead of a blank tab (Windows 11 styled, light and dark), with
+/// the app icon built in so the page needs nothing from the network.
+static BLOCKED_PAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use base64::{Engine as _, prelude::BASE64_STANDARD};
+    let icon = BASE64_STANDARD.encode(include_bytes!("../../app/Assets/Square150x150Logo.png"));
+    include_str!("blocked.html").replace("__CF_ICON__", &icon)
+});
+
+/// Your Windows accent color as Windows 11 buttons use it: a darker shade in light mode and a
+/// lighter one in dark mode, from the accent palette Windows keeps in the registry. Browsers
+/// report a stock blue instead of the real color, so the page gets it from here. Read on each
+/// blocked page (one small registry read), so a color change shows up right away.
+fn accent_shades() -> (String, String) {
+    let palette = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent")
+        .and_then(|k| k.get_raw_value("AccentPalette"))
+        .map(|v| v.bytes)
+        .unwrap_or_default();
+    // Eight RGBA entries from lightest to darkest: Light3, Light2, Light1, Accent, Dark1, ...
+    let shade = |i: usize| palette.get(i * 4..i * 4 + 3).map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
+    match (shade(4), shade(1)) {
+        (Some(dark1), Some(light2)) => (dark1, light2),
+        // Windows' default blue
+        _ => ("#005fb8".into(), "#60cdff".into()),
+    }
+}
+
+/// The page for one blocked address. Its Exclude button opens the app with the site name
+/// (`coffee-filter://exclude?host=...`); the browser and the app each ask before anything changes.
+fn blocked_page(url: &str, host: &str, reason: &str) -> String {
+    let exclude       = format!("coffee-filter://exclude?host={}", userscripts::encode_component(host));
+    let (light, dark) = accent_shades();
+    // The address goes in last, so text inside it can never be taken for a placeholder
+    BLOCKED_PAGE
+        .replace("__CF_ACCENT_LIGHT__", &light)
+        .replace("__CF_ACCENT_DARK__", &dark)
+        .replace("__CF_EXCLUDE__", &userscripts::escape_html(&exclude))
+        .replace("__CF_REASON__", &userscripts::escape_html(reason))
+        .replace("__CF_URL__", &userscripts::escape_html(url))
+}
+
+/// Why a page was blocked, shown under the title.
+const LISTED: &str = "This page is on a filter list for ads, tracking, or harmful content, so it wasn't loaded.";
+
+// =========================================================================
+// LINK SHORTENERS
+// =========================================================================
+
+/// Shorteners whose links are resolved by Coffee Filter instead of the browser: the browser
+/// goes straight to the destination, so the shortener never sees its cookies, the page it came
+/// from, or the click.
+const SHORTENERS: [&str; 1] = ["t.co"];
+
+/// Query parameters that only track where a click came from.
+fn is_tracking_param(name: &str) -> bool {
+    name.starts_with("utm_") || matches!(name, "fbclid" | "gclid" | "dclid" | "msclkid" | "mc_eid" | "igshid" | "ref_src" | "ref_url" | "twclid" | "si")
+}
+
+/// The destination without its tracking parameters.
+fn clean_destination(url: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else { return url.to_string() };
+    let (query, fragment) = query.split_once('#').map_or((query, None), |(q, f)| (q, Some(f)));
+    let kept: Vec<&str> = query.split('&').filter(|p| !p.is_empty() && !is_tracking_param(p.split('=').next().unwrap_or(""))).collect();
+    let mut out = base.to_string();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    if let Some(f) = fragment {
+        out.push('#');
+        out.push_str(f);
+    }
+    out
+}
+
+/// Ask the shortener where a link goes (no cookies, no referrer, redirects not followed),
+/// then send the browser straight there. Anything unexpected shows the blocked page.
+async fn resolve_short_link(client: &reqwest::Client, url: &str, host: &str) -> Response<Body> {
+    let location = match client.get(url).send().await {
+        Ok(r) if r.status().is_redirection() => r.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string),
+        _ => None,
+    };
+    let redirect = location.filter(|l| l.starts_with("https://") || l.starts_with("http://")).and_then(|dest| {
+        Response::builder()
+            .status(StatusCode::FOUND)
+            .header("location", clean_destination(&dest))
+            .header("referrer-policy", "no-referrer")
+            .header("cache-control", "no-store")
+            .body(Body::empty())
+            .ok()
+    });
+    redirect.unwrap_or_else(|| {
+        let page = blocked_page(url, host, "This short link couldn't be opened without its tracking, so it wasn't loaded.");
+        Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header("content-type", "text/html; charset=utf-8")
+            .body(Body::from(page))
+            .expect("static response")
+    })
+}
+
+/// Client for resolving short links: direct (never through our proxy), no redirects followed,
+/// no cookies, short time limit.
+pub fn resolver_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+}
 
 /// The handler. hudsucker clones it for each request; `page` carries one request's
 /// state over to its own response.
@@ -411,6 +534,18 @@ impl Blocker {
         }
     }
 
+    /// Does this connection come from an app you excluded? Free when none are excluded.
+    async fn is_excluded_app(&self, ctx: &HttpContext) -> bool {
+        let apps = {
+            let apps = self.shared.apps.read().unwrap();
+            if apps.is_empty() {
+                return false;
+            }
+            apps.clone()
+        };
+        apps::is_excluded(&apps, &self.shared.app_cache, ctx.client_addr).await
+    }
+
     /// Private hosts, Windows' update and Store servers, and your exclusions are only tunneled.
     fn decrypts(&self, host: &str) -> bool {
         !is_private_host(host) && !is_excluded(&sysproxy::SYSTEM_HOSTS, host) && !is_excluded(&self.shared.exclusions.read().unwrap(), host)
@@ -418,7 +553,7 @@ impl Blocker {
 }
 
 impl HttpHandler for Blocker {
-    async fn handle_request(&mut self, _ctx: &HttpContext, mut req: Request<Body>) -> RequestOrResponse {
+    async fn handle_request(&mut self, ctx: &HttpContext, mut req: Request<Body>) -> RequestOrResponse {
         // hudsucker clones the handler per request; reset anyway so state can never leak across
         self.page    = None;
         self.install = None;
@@ -448,25 +583,34 @@ impl HttpHandler for Blocker {
             return response.expect("static response").into();
         }
 
-        // Excluded sites over plain HTTP are left alone too: no blocking, no page changes
-        let host = req.uri().host().unwrap_or("").to_string();
-        if is_excluded(&self.shared.exclusions.read().unwrap(), &host) || is_excluded(&sysproxy::SYSTEM_HOSTS, &host) {
+        // We can't pass on compressed WebSocket frames (excluded or not), so don't let the server agree to them
+        let host      = req.uri().host().unwrap_or("").to_string();
+        let websocket = req.headers().get("upgrade").is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"));
+        if websocket {
+            req.headers_mut().remove("sec-websocket-extensions");
+        }
+
+        // Excluded sites and apps over plain HTTP are left alone too: no blocking, no page changes
+        let excluded_site = is_excluded(&self.shared.exclusions.read().unwrap(), &host) || is_excluded(&sysproxy::SYSTEM_HOSTS, &host);
+        if excluded_site || self.is_excluded_app(ctx).await {
             return req.into();
         }
 
         // WebSockets connect on their own too, past PublicOnly
-        if req.headers().get("upgrade").is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket")) {
-            if self.points_local(&host, req.uri().port_u16().unwrap_or(80)).await {
-                return local_refused();
-            }
-            // We can't pass on compressed WebSocket frames, so don't let the server agree to them
-            req.headers_mut().remove("sec-websocket-extensions");
+        if websocket && self.points_local(&host, req.uri().port_u16().unwrap_or(80)).await {
+            return local_refused();
         }
 
         let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok());
         let url    = page_url(req.uri());
         let source = header("referer").or(header("origin")).unwrap_or(&url);
         let kind   = request_type(header("sec-fetch-dest"));
+
+        // Short links open their destination directly; the browser never contacts the shortener
+        if req.method() == Method::GET && kind == "document" && SHORTENERS.contains(&host.as_str()) {
+            self.shared.allowed.fetch_add(1, Ordering::Relaxed);
+            return resolve_short_link(&self.shared.resolver, &url, &host).await.into();
+        }
 
         let engine = self.shared.engine.read().unwrap().clone();
         let block  = AdRequest::new(&url, source, kind, req.method().as_str())
@@ -489,7 +633,7 @@ impl HttpHandler for Blocker {
         self.shared.log.record(&url, kind, source);
         let response = Response::builder().status(StatusCode::FORBIDDEN);
         let response = if kind == "document" {
-            response.header("content-type", "text/html; charset=utf-8").body(Body::from(BLOCKED_PAGE))
+            response.header("content-type", "text/html; charset=utf-8").body(Body::from(blocked_page(&url, &host, LISTED)))
         } else {
             response.body(Body::empty())
         };
@@ -507,9 +651,9 @@ impl HttpHandler for Blocker {
     }
 
     /// Decrypt only HTTPS on 443 for hosts not excluded; everything else is tunneled untouched.
-    async fn should_intercept_connect(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
+    async fn should_intercept_connect(&mut self, ctx: &HttpContext, req: &Request<Body>) -> bool {
         let Some(host) = req.uri().host() else { return false };
-        req.uri().port_u16() == Some(443) && self.decrypts(host)
+        req.uri().port_u16() == Some(443) && self.decrypts(host) && !self.is_excluded_app(ctx).await
     }
 
     /// Check again with the site name inside the TLS handshake, which can differ from the
@@ -625,6 +769,40 @@ mod tests {
         for host in ["reddit.com", "8.8.8.8", "172.32.0.1", "100.128.0.1", "[2606:4700::1]", "[::ffff:8.8.8.8]"] {
             assert!(!is_private_host(host), "{host}");
         }
+    }
+
+    #[test]
+    fn short_link_destinations_lose_tracking() {
+        assert_eq!(clean_destination("https://a.com/p?utm_source=x&id=7&fbclid=z#top"), "https://a.com/p?id=7#top");
+        assert_eq!(clean_destination("https://a.com/p?utm_campaign=x"), "https://a.com/p");
+        assert_eq!(clean_destination("https://a.com/p"), "https://a.com/p");
+        assert_eq!(clean_destination("https://a.com/?q=utm_source"), "https://a.com/?q=utm_source", "only parameter names count");
+    }
+
+    #[test]
+    fn blocked_page_shows_the_address_safely() {
+        let page = blocked_page("https://evil.com/<script>alert(1)</script>__CF_EXCLUDE__", "evil.com", LISTED);
+        assert!(page.contains("https://evil.com/&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!page.contains("<script>alert"));
+        assert!(page.contains("&lt;/script&gt;__CF_EXCLUDE__</code>"), "text in the address is shown as is, never filled in");
+        for placeholder in ["__CF_ICON__", "__CF_REASON__", "__CF_ACCENT_LIGHT__", "__CF_ACCENT_DARK__", "__CF_URL__"] {
+            assert!(!page.contains(placeholder), "{placeholder} is filled");
+        }
+        assert!(page.contains(&userscripts::escape_html(LISTED)));
+        let (light, dark) = accent_shades();
+        assert!(page.contains(&format!("--accent: {light};")) && page.contains(&format!("--accent: {dark};")), "Windows accent color");
+        assert!(page.contains("data:image/png;base64,iVBOR"), "icon is built in");
+        assert!(page.contains("href=\"coffee-filter://exclude?host=evil.com\""), "Exclude opens the app with the site name");
+    }
+
+    #[test]
+    fn builtin_rules_hide_x_promoted_posts() {
+        let mut set = FilterSet::new(false);
+        add_list(&mut set, BUILTIN_RULES.to_string(), false);
+        let engine = Engine::new_with_filter_set(set);
+        let found  = engine.url_cosmetic_resources("https://x.com/home");
+        let all    = format!("{:?} {:?}", found.hide_selectors, found.procedural_actions);
+        assert!(all.contains("placementTracking") && all.contains("cellInnerDiv"), "{all}");
     }
 
     #[test]

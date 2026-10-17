@@ -280,12 +280,12 @@ pub fn is_install_link(uri: &Uri) -> bool {
     uri.scheme_str() == Some("https") && uri.path().to_ascii_lowercase().ends_with(".user.js")
 }
 
-fn escape_html(text: &str) -> String {
+pub fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
 /// Percent-encode everything but unreserved characters, for the `coffee-filter://` link.
-fn encode_component(text: &str) -> String {
+pub fn encode_component(text: &str) -> String {
     text.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()

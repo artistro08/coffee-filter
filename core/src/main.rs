@@ -5,6 +5,7 @@
 //! or crashing), Windows shutting down, or the user signing out stops the proxy
 //! and restores the system proxy settings.
 
+mod apps;
 mod ca;
 mod config;
 mod cosmetic;
@@ -55,6 +56,12 @@ enum Command {
     RenewCert,
     UpdateLists,
     SetExclusions { hosts: Vec<String> },
+    /// Add one site to the saved exclusions (the blocked page's Exclude button).
+    AddExclusion { host: String },
+    /// Exclude a program (`path`) or a Microsoft Store app (`package`).
+    AddExcludedApp { name: String, path: Option<String>, package: Option<String> },
+    /// Stop excluding the app with this path or package family name.
+    RemoveExcludedApp { id: String },
     ClearProblems,
     SetList { name: String, enabled: bool },
     AddList { name: String, url: String },
@@ -118,6 +125,11 @@ fn bind_exclusive(port: u16) -> io::Result<TcpListener> {
     TcpListener::from_std(socket.into())
 }
 
+/// How an excluded app is named in commands: its package family name, else its path.
+fn app_id(app: &config::ExcludedApp) -> &str {
+    app.package.as_deref().or(app.path.as_deref()).unwrap_or("")
+}
+
 /// Run blocking work (UAC prompts, DPAPI, file I/O) off the proxy's worker threads.
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> io::Result<T> + Send + 'static) -> Result<T, String> {
     spawn_blocking(work).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
@@ -135,6 +147,7 @@ impl App {
             "rules":          self.rules,
             "port":           self.config.port,
             "exclusions":     self.config.exclusions,
+            "excluded_apps":  self.config.excluded_apps,
             "lists":          self.config.lists,
             "userscripts":    self.config.userscripts,
             "problems":       self.problems.list(),
@@ -152,6 +165,13 @@ impl App {
         let old = std::mem::replace(&mut *self.shared.engine.write().unwrap(), Arc::new(engine));
         drop(old);
         self.rules = rules;
+    }
+
+    /// Save the excluded apps and use them from the next connection on.
+    fn save_apps(&mut self) -> Result<(), String> {
+        *self.shared.apps.write().unwrap() = Arc::new(self.config.excluded_apps.clone());
+        self.shared.app_cache.clear();
+        self.config.save().map_err(|e| e.to_string())
     }
 
     async fn reload_userscripts(&mut self) {
@@ -288,6 +308,32 @@ impl App {
                     Err(format!("These aren't site names and weren't saved: {}", dropped.join(", ")))
                 }
             }
+            Command::AddExclusion { host } => {
+                let host = normalize_host(&host).ok_or("That isn't a site name.")?;
+                if !self.config.exclusions.contains(&host) {
+                    self.config.exclusions.push(host);
+                    self.config.exclusions.sort();
+                }
+                *self.shared.exclusions.write().unwrap() = self.config.exclusions.clone();
+                self.config.save().map_err(|e| e.to_string())
+            }
+            Command::AddExcludedApp { name, path, package } => {
+                // One line, at most 100 characters (program descriptions can be anything)
+                let name: String = name.lines().next().unwrap_or("").trim().chars().take(100).collect();
+                let app = config::ExcludedApp { name, path, package };
+                apps::validate(&app)?;
+                let id = app_id(&app).to_lowercase();
+                if !self.config.excluded_apps.iter().any(|a| app_id(a).to_lowercase() == id) {
+                    self.config.excluded_apps.push(app);
+                    self.config.excluded_apps.sort_by_key(|a| a.name.to_lowercase());
+                }
+                self.save_apps()
+            }
+            Command::RemoveExcludedApp { id } => {
+                let id = id.to_lowercase();
+                self.config.excluded_apps.retain(|a| app_id(a).to_lowercase() != id);
+                self.save_apps()
+            }
             Command::ClearProblems => {
                 self.problems.clear();
                 Ok(())
@@ -416,6 +462,9 @@ async fn main() {
         blocked:     Default::default(),
         allowed:     Default::default(),
         log:         Default::default(),
+        resolver:    filter::resolver_client().expect("HTTP client"),
+        apps:        RwLock::new(Arc::new(config.excluded_apps.clone())),
+        app_cache:   Default::default(),
     });
     let mut app = App { config, shared, problems, rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
     app.refresh_cert();

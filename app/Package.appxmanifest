@@ -6,7 +6,7 @@
     xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
     IgnorableNamespaces="uap rescap desktop6">
 
-    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.0.13" />
+    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.0.26" />
 
     <Properties>
         <DisplayName>Coffee Filter</DisplayName>
@@ -52,5 +52,7 @@
     <Capabilities>
         <rescap:Capability Name="runFullTrust" />
         <rescap:Capability Name="unvirtualizedResources" />
+        <!-- Lists your installed Store apps when you add one to Excluded apps -->
+        <rescap:Capability Name="packageQuery" />
     </Capabilities>
 </Package>

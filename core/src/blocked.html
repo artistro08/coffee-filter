@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="referrer" content="no-referrer">
+        <title>
+            Blocked by Coffee Filter
+        </title>
+        <style>
+          /* Windows 11 (WinUI) colors: light theme, then dark */
+          :root {
+            --page-bg: #f3f3f3;
+            --card-bg: #fbfbfb;
+            --card-border: rgba(0, 0, 0, 0.0578);
+            --text: rgba(0, 0, 0, 0.8956);
+            --text-secondary: rgba(0, 0, 0, 0.6063);
+            --subtle-bg: rgba(0, 0, 0, 0.0373);
+            /* Your Windows accent color, filled in by Coffee Filter (browsers don't share it) */
+            --accent: __CF_ACCENT_LIGHT__;
+            --accent-hover: color-mix(in srgb, var(--accent) 90%, transparent);
+            --accent-pressed: color-mix(in srgb, var(--accent) 80%, transparent);
+            --accent-text: #ffffff;
+            --accent-border: rgba(0, 0, 0, 0.4);
+            --focus: #000000;
+            --control-bg: rgba(255, 255, 255, 0.7);
+            --control-hover: rgba(249, 249, 249, 0.5);
+            --control-pressed: rgba(249, 249, 249, 0.3);
+            --control-border: rgba(0, 0, 0, 0.0578);
+            --control-border-bottom: rgba(0, 0, 0, 0.1622);
+            --title-size: 28px;
+            --title-line: 36px;
+            color-scheme: light dark;
+          }
+
+          @media (prefers-color-scheme: dark) {
+            :root {
+              --page-bg: #202020;
+              --card-bg: #2b2b2b;
+              --card-border: rgba(0, 0, 0, 0.1);
+              --text: #ffffff;
+              --text-secondary: rgba(255, 255, 255, 0.786);
+              --subtle-bg: rgba(255, 255, 255, 0.0605);
+              --accent: __CF_ACCENT_DARK__;
+              --accent-text: #000000;
+              --accent-border: rgba(0, 0, 0, 0.14);
+              --focus: #ffffff;
+              --control-bg: rgba(255, 255, 255, 0.0605);
+              --control-hover: rgba(255, 255, 255, 0.0837);
+              --control-pressed: rgba(255, 255, 255, 0.0326);
+              --control-border: rgba(255, 255, 255, 0.0698);
+              --control-border-bottom: rgba(255, 255, 255, 0.0465);
+            }
+          }
+
+          * {
+            box-sizing: border-box;
+          }
+
+          body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px 16px;
+            background: var(--page-bg);
+            color: var(--text);
+            font: 400 14px/20px "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+            -webkit-font-smoothing: antialiased;
+          }
+
+          main {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            width: 100%;
+            max-width: 480px;
+            padding: 36px 32px 32px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            text-align: center;
+          }
+
+          img {
+            width: 72px;
+            height: 72px;
+          }
+
+          h1 {
+            margin: 0;
+            font: 600 var(--title-size)/var(--title-line) "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+          }
+
+          p {
+            margin: 0;
+            color: var(--text-secondary);
+          }
+
+          code {
+            max-width: 100%;
+            padding: 6px 12px;
+            background: var(--subtle-bg);
+            border-radius: 4px;
+            font: 400 12px/16px "Cascadia Mono", Consolas, monospace;
+            overflow-wrap: anywhere;
+          }
+
+          .actions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 8px;
+          }
+
+          /* WinUI standard button */
+          .button,
+          button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 120px;
+            min-height: 32px;
+            padding: 5px 12px 7px;
+            background: var(--control-bg);
+            color: var(--text);
+            border: 1px solid var(--control-border);
+            border-bottom-color: var(--control-border-bottom);
+            border-radius: 4px;
+            font: 400 14px/20px "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+            text-decoration: none;
+            cursor: default;
+            transition: background-color 0.083s linear;
+          }
+
+          .button:hover,
+          button:hover {
+            background: var(--control-hover);
+          }
+
+          .button:active,
+          button:active {
+            background: var(--control-pressed);
+            color: var(--text-secondary);
+            border-bottom-color: var(--control-border);
+          }
+
+          /* WinUI accent button */
+          .accent {
+            background: var(--accent);
+            color: var(--accent-text);
+            border-color: transparent;
+            border-bottom-color: var(--accent-border);
+          }
+
+          .accent:hover {
+            background: var(--accent-hover);
+          }
+
+          .accent:active {
+            background: var(--accent-pressed);
+            color: var(--accent-text);
+            border-bottom-color: transparent;
+          }
+
+          .button:focus-visible,
+          button:focus-visible {
+            outline: 2px solid var(--focus);
+            outline-offset: 1px;
+          }
+        </style>
+    </head>
+    <body>
+        <main>
+            <img src="data:image/png;base64,__CF_ICON__" alt="Coffee Filter">
+            <h1>
+                Blocked by Coffee Filter
+            </h1>
+            <p>
+                __CF_REASON__
+            </p>
+            <code>__CF_URL__</code>
+            <div class="actions">
+                <button type="button" class="accent" onclick="history.length > 1 ? history.back() : window.close()">
+                    Go back
+                </button>
+                <a class="button" href="__CF_EXCLUDE__">
+                    Exclude this site
+                </a>
+            </div>
+        </main>
+    </body>
+</html>

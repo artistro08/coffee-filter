@@ -28,6 +28,17 @@ pub struct Userscript {
     pub enabled: bool,
 }
 
+/// An app whose connections are never decrypted or filtered: a program (by path) or a
+/// Microsoft Store app (by package family name, which survives updates). Exactly one is set.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExcludedApp {
+    pub name:    String,
+    #[serde(default)]
+    pub path:    Option<String>,
+    #[serde(default)]
+    pub package: Option<String>,
+}
+
 fn custom_kind() -> String {
     "custom".into()
 }
@@ -41,6 +52,8 @@ pub struct Config {
     pub exclusions: Vec<String>,
     #[serde(default)]
     pub userscripts: Vec<Userscript>,
+    #[serde(default)]
+    pub excluded_apps: Vec<ExcludedApp>,
 }
 
 impl Default for Config {
@@ -67,6 +80,7 @@ impl Default for Config {
             ],
             exclusions: vec![],
             userscripts: vec![],
+            excluded_apps: vec![],
         }
     }
 }

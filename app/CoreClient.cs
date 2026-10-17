@@ -27,6 +27,22 @@ public class Userscript
 }
 
 /// <summary>
+/// An app whose connections are never decrypted or filtered: a program (Path) or a
+/// Microsoft Store app (Package, its package family name).
+/// </summary>
+public class ExcludedApp
+{
+    public string Name { get; set; } = "";
+    public string? Path { get; set; }
+    public string? Package { get; set; }
+
+    /// <summary>
+    /// How the core names it in remove_excluded_app.
+    /// </summary>
+    public string Id => Package ?? Path ?? "";
+}
+
+/// <summary>
 /// A blocked request from the live log.
 /// </summary>
 public class LogEntry
@@ -75,6 +91,7 @@ public class CoreStatus
     public int Rules { get; set; }
     public int Port { get; set; }
     public List<string> Exclusions { get; set; } = [];
+    public List<ExcludedApp> ExcludedApps { get; set; } = [];
     public List<FilterList> Lists { get; set; } = [];
     public List<Userscript> Userscripts { get; set; } = [];
     public List<Problem> Problems { get; set; } = [];

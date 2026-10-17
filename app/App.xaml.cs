@@ -3,7 +3,6 @@ using H.NotifyIcon;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Windows.AppLifecycle;
 
 namespace CoffeeFilter;
@@ -87,7 +86,7 @@ public partial class App : Application
         SetTrayVisible(Settings.ShowTrayIcon);
         _uiSettings.ColorValuesChanged += (_, _) => _dispatcher.TryEnqueue(UpdateTrayIconTheme);
 
-        var link = UserscriptLink(AppInstance.GetCurrent().GetActivatedEventArgs());
+        var link = ReadLink(AppInstance.GetCurrent().GetActivatedEventArgs());
         _openedByLink = link is not null;
         Activate(link);
         StartCore(resumeBlocking: Settings.BlockingEnabled);
@@ -254,6 +253,9 @@ public partial class App : Application
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static partial bool K32EmptyWorkingSet(nint process);
 
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial int GetSystemMetrics(int index);
+
     /// <summary>
     /// Called when Coffee Filter is launched again while running. Safe from any thread.
     /// The arguments are read right away: they belong to the second launch, which exits
@@ -261,15 +263,22 @@ public partial class App : Application
     /// </summary>
     public static void ActivateFromAnyThread(AppActivationArguments args)
     {
-        var url = UserscriptLink(args);
-        _instance?._dispatcher?.TryEnqueue(() => _instance.Activate(url));
+        var link = ReadLink(args);
+        _instance?._dispatcher?.TryEnqueue(() => _instance.Activate(link));
     }
 
     /// <summary>
-    /// The script address from a coffee-filter://install?url=... link (an Install button on
-    /// a userscript page), or null for a normal launch.
+    /// A coffee-filter:// link from a web page: what it asks for, and its one value.
     /// </summary>
-    private static string? UserscriptLink(AppActivationArguments args)
+    /// <param name="Action">"install" (a userscript page's Install button) or "exclude" (the blocked page's Exclude button).</param>
+    /// <param name="Value">The script address, or the site name.</param>
+    private sealed record AppLink(string Action, string Value);
+
+    /// <summary>
+    /// The link that opened the app (coffee-filter://install?url=... or coffee-filter://exclude?host=...),
+    /// or null for a normal launch.
+    /// </summary>
+    private static AppLink? ReadLink(AppActivationArguments args)
     {
         try
         {
@@ -277,11 +286,33 @@ public partial class App : Application
             {
                 return null;
             }
-            if (uri.Host != "install" || string.IsNullOrEmpty(uri.Query))
+            if (string.IsNullOrEmpty(uri.Query))
             {
                 return null;
             }
-            return new Windows.Foundation.WwwFormUrlDecoder(uri.Query).FirstOrDefault(p => p.Name == "url")?.Value;
+            var key = uri.Host switch
+            {
+                "install" => "url",
+                "exclude" => "host",
+                _ => null,
+            };
+            var value = key is null ? null : new Windows.Foundation.WwwFormUrlDecoder(uri.Query).FirstOrDefault(p => p.Name == key)?.Value;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            // Any web page can make this link, so a site name must look like one before the
+            // consent dialog shows it (no sentences, no pages of text)
+            if (uri.Host == "exclude")
+            {
+                value = value.Trim().TrimStart('*', '.').TrimEnd('.').ToLowerInvariant();
+                if (value.Length is 0 or > 253 || !value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-'))
+                {
+                    return null;
+                }
+            }
+            return new AppLink(uri.Host, value);
         }
         catch (Exception ex)
         {
@@ -291,15 +322,19 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Show the window, and for an install link, the Add userscript dialog with the address filled in.
+    /// Show the window, and for a link, its dialog: Add userscript with the address filled in,
+    /// or Exclude this site with the site name.
     /// </summary>
-    private void Activate(string? userscript)
+    private void Activate(AppLink? link)
     {
         ShowWindow();
-        if (userscript is not null)
+        if (link is null)
         {
-            _ = _window!.AddUserscriptAsync(userscript, fromLink: true);
+            return;
         }
+        _ = link.Action == "install"
+            ? _window!.AddUserscriptAsync(link.Value, fromLink: true)
+            : _window!.ExcludeSiteAsync(link.Value);
     }
 
     public void Quit()
@@ -377,6 +412,15 @@ public partial class App : Application
         }
         using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
         var light     = key?.GetValue("SystemUsesLightTheme") is 1;
-        _tray.IconSource = new BitmapImage(new Uri($"ms-appx:///Assets/tray-{(light ? "black" : "white")}.ico"));
+        var file      = Path.Combine(AppContext.BaseDirectory, "Assets", $"tray-{(light ? "black" : "white")}.ico");
+
+        // Loaded here and handed over ready-made. An IconSource image is converted in the
+        // background, and when the tray icon was created first, it sometimes showed no icon.
+        // The size Windows draws tray icons at for this display's scaling
+        const int SM_CXSMICON = 49;
+        var size   = GetSystemMetrics(SM_CXSMICON);
+        var old    = _tray.Icon;
+        _tray.Icon = new System.Drawing.Icon(file, size, size);
+        old?.Dispose();
     }
 }

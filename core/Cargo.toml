@@ -25,7 +25,7 @@ tower-service = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 # Win32_System_Registry is needed by SHELLEXECUTEINFOW (its hkeyClass field), not for registry access
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Networking_WinInet", "Win32_Networking_WinSock", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinInet", "Win32_Networking_WinSock", "Win32_Storage_Packaging_Appx", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.56.0"
 x509-parser = "0.18"
 

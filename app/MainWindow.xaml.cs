@@ -35,8 +35,9 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _logTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private string _listsKey                   = "";
     private string _scriptsKey                 = "";
-    private string _problemsKey                = "";
+    private string? _problemsKey;
     private string? _exclusionsKey;
+    private string? _appsKey;
     private List<string> _exclusions           = [];
     private ulong _logAfter;
     private bool _updating;
@@ -69,10 +70,11 @@ public sealed partial class MainWindow : Window
         }
         AnimatePage(MainContent, from: -48);
         AnimatePage(LogView, from: 48);
+        AnimatePage(ProblemsView, from: 48);
         ShowMain();
 
         // Cards keep one row at every width
-        foreach (var expander in new[] { UserscriptsCard, ExclusionsCard, ProblemsCard, AboutCard })
+        foreach (var expander in new[] { UserscriptsCard, ExclusionsCard, ExcludedAppsCard, AboutCard })
         {
             OneRow(expander);
         }
@@ -122,7 +124,7 @@ public sealed partial class MainWindow : Window
         if (Loading.Visibility == Visibility.Visible)
         {
             Loading.Visibility = Visibility.Collapsed;
-            if (LogView.Visibility == Visibility.Collapsed)
+            if (_subPage is null)
             {
                 MainContent.Visibility = Visibility.Visible;
                 OneRowWhenShown(MainContent);
@@ -149,8 +151,9 @@ public sealed partial class MainWindow : Window
             BuildListGroups(s.Lists);
             BuildUserscripts(s.Userscripts);
             BuildExclusions(s.Exclusions);
+            BuildExcludedApps(s.ExcludedApps);
         }
-        BuildProblems(s.Problems, s.Exclusions);
+        BuildProblems(s.Problems);
     }
 
     // =========================================================================
@@ -307,9 +310,32 @@ public sealed partial class MainWindow : Window
         Breadcrumb.ItemsSource          = new[] { "Coffee Filter" };
         AppTitleBar.IsBackButtonVisible = false;
         LogView.Visibility              = Visibility.Collapsed;
+        ProblemsView.Visibility         = Visibility.Collapsed;
+        _subPage                        = null;
         MainContent.Visibility          = _app.Last is null ? Visibility.Collapsed : Visibility.Visible;
         PageScroll.ChangeView(null, 0, null, disableAnimation: true);
         OneRowWhenShown(MainContent);
+    }
+
+    /// <summary>
+    /// The sub-page on screen (Ad blocking or Connection problems), or null on the main page.
+    /// </summary>
+    private FrameworkElement? _subPage;
+
+    /// <summary>
+    /// Open a sub-page: its name joins the title, the back button appears, and it slides in.
+    /// </summary>
+    private void ShowSubPage(FrameworkElement page, string title)
+    {
+        Breadcrumb.ItemsSource          = new[] { "Coffee Filter", title };
+        AppTitleBar.IsBackButtonVisible = true;
+        Slide(Breadcrumb, from: 48, fade: true);
+        Slide(AppTitleBar, from: -BackButtonWidth, fade: false);
+        MainContent.Visibility          = Visibility.Collapsed;
+        page.Visibility                 = Visibility.Visible;
+        _subPage                        = page;
+        PageScroll.ChangeView(null, 0, null, disableAnimation: true);
+        OneRowWhenShown(page);
     }
 
     /// <summary>
@@ -317,17 +343,19 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void ShowLog()
     {
-        Breadcrumb.ItemsSource          = new[] { "Coffee Filter", "Ad blocking" };
-        AppTitleBar.IsBackButtonVisible = true;
-        Slide(Breadcrumb, from: 48, fade: true);
-        Slide(AppTitleBar, from: -BackButtonWidth, fade: false);
-        MainContent.Visibility          = Visibility.Collapsed;
-        LogView.Visibility              = Visibility.Visible;
-        PageScroll.ChangeView(null, 0, null, disableAnimation: true);
-        OneRowWhenShown(LogView);
+        ShowSubPage(LogView, "Ad blocking");
         _logTimer.Start();
         await PollLogAsync();
     }
+
+    /// <summary>
+    /// The Connection problems page: apps and sites that refused Coffee Filter's certificate.
+    /// </summary>
+    private void ShowProblems() => ShowSubPage(ProblemsView, "Connection problems");
+
+    private void OnProblemsCardClicked(object sender, RoutedEventArgs e) => ShowProblems();
+
+    private void OnProblemsCardInvoked(object? sender, EventArgs e) => ShowProblems();
 
     private void OnBreadcrumbClicked(BreadcrumbBar sender, BreadcrumbBarItemClickedEventArgs e)
     {
@@ -340,18 +368,21 @@ public sealed partial class MainWindow : Window
     private void OnBackRequested(TitleBar sender, object args) => GoBack();
 
     /// <summary>
-    /// Leave the Ad blocking page: stop the live log and return to the main page.
+    /// Leave a sub-page for the main page. Leaving Ad blocking also stops the live log.
     /// </summary>
     private void GoBack()
     {
-        if (LogView.Visibility != Visibility.Visible)
+        if (_subPage is null)
         {
             return;
         }
-        _logTimer.Stop();
-        _ = _app.RunAsync("log_stop", showErrors: false);
-        LogEntries.Children.Clear();
-        _logAfter = 0;
+        if (_subPage == LogView)
+        {
+            _logTimer.Stop();
+            _ = _app.RunAsync("log_stop", showErrors: false);
+            LogEntries.Children.Clear();
+            _logAfter = 0;
+        }
         ShowMain();
     }
 
@@ -516,6 +547,57 @@ public sealed partial class MainWindow : Window
         return box.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
+    /// <summary>
+    /// Ask to exclude a site, from the blocked page's Exclude button. Like an install link, the
+    /// window jumps in front of what you were doing, so Exclude isn't the default button and
+    /// stays off for a moment: a keystroke meant for the page can't accept it.
+    /// </summary>
+    public async Task ExcludeSiteAsync(string host)
+    {
+        // Opened from a link, the window may still be loading
+        if (Content is FrameworkElement { IsLoaded: false } root)
+        {
+            var loaded = new TaskCompletionSource();
+            root.Loaded += (_, _) => loaded.TrySetResult();
+            await loaded.Task;
+        }
+        BringToFront();
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot               = Content.XamlRoot,
+            Title                  = "Exclude this site?",
+            Content                = new TextBlock { Text = $"{host} will never be decrypted or filtered, so its ads and trackers will load.", TextWrapping = TextWrapping.Wrap, MaxWidth = 400 },
+            PrimaryButtonText      = "Exclude",
+            CloseButtonText        = "Cancel",
+            DefaultButton          = ContentDialogButton.None,
+            IsPrimaryButtonEnabled = false,
+        };
+        dialog.Opened += async (_, _) =>
+        {
+            await Task.Delay(1000);
+            dialog.IsPrimaryButtonEnabled = true;
+        };
+
+        // Only one dialog can be open at a time
+        try
+        {
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex);
+            return;
+        }
+
+        // Added by the core to its saved list, so a list this window hasn't loaded yet isn't lost
+        ExclusionsCard.IsExpanded = true;
+        await _app.RunAsync("add_exclusion", new JsonObject { ["host"] = host }, lists: true);
+    }
+
     private async void OnAddExclusionClicked(object sender, RoutedEventArgs e)
     {
         var sites = await AskForSitesAsync(bulk: false);
@@ -535,13 +617,225 @@ public sealed partial class MainWindow : Window
     }
 
     // =========================================================================
+    // EXCLUDED APPS
+    // =========================================================================
+
+    /// <summary>
+    /// One card per excluded app (its name, and its path or Store package), each with Delete.
+    /// </summary>
+    private void BuildExcludedApps(List<ExcludedApp> apps)
+    {
+        var key = string.Join("\n", apps.Select(a => a.Id));
+        if (key == _appsKey)
+        {
+            return;
+        }
+        _appsKey = key;
+        ExcludedAppsCard.Items.Clear();
+
+        // Empty State
+        if (apps.Count == 0)
+        {
+            ExcludedAppsCard.Items.Add(Row(new SettingsCard { Header = "No excluded apps" }));
+            return;
+        }
+
+        foreach (var app in apps)
+        {
+            var delete = new Button { Content = "Delete" };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(delete, $"Delete {app.Name}");
+            delete.Click += async (_, _) => await _app.RunAsync("remove_excluded_app", new JsonObject { ["id"] = app.Id }, lists: true);
+            ExcludedAppsCard.Items.Add(Row(new SettingsCard
+            {
+                Header      = app.Name,
+                Description = app.Package is null ? app.Path ?? "" : $"Microsoft Store app · {app.Package}",
+                HeaderIcon  = new FontIcon { Glyph = app.Package is null ? "\uE7AC" : "\uE719" },
+                Content     = delete,
+            }));
+        }
+    }
+
+    private async Task AddExcludedAppAsync(string name, string? path, string? package)
+    {
+        ExcludedAppsCard.IsExpanded = true;
+        await _app.RunAsync("add_excluded_app", new JsonObject { ["name"] = name, ["path"] = path, ["package"] = package }, lists: true);
+    }
+
+    /// <summary>
+    /// Pick a program file. Its name comes from the file's own description (what Task Manager shows).
+    /// </summary>
+    private async void OnAddProgramClicked(object sender, RoutedEventArgs e)
+    {
+        var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id)
+        {
+            SuggestedStartLocation = Microsoft.Windows.Storage.Pickers.PickerLocationId.ComputerFolder,
+            CommitButtonText       = "Exclude",
+        };
+        picker.FileTypeFilter.Add(".exe");
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null)
+        {
+            return;
+        }
+        var description = System.Diagnostics.FileVersionInfo.GetVersionInfo(file.Path).FileDescription;
+        var name        = string.IsNullOrWhiteSpace(description) ? Path.GetFileNameWithoutExtension(file.Path) : description.Trim();
+        await AddExcludedAppAsync(name, file.Path, null);
+    }
+
+    /// <summary>
+    /// Pick from your installed Microsoft Store (MSIX) apps, with search. Apps are matched by
+    /// package family name, so the exclusion keeps working after the app updates.
+    ///
+    /// The dialog opens right away with a loading circle; reading every installed package can
+    /// take a few seconds and runs off the UI thread, with a time limit in case one package hangs.
+    /// Each app's row is built once in code and added to the list as is: list items made from
+    /// data (templates, bound or plain names) came out blank or crashed in the AOT build.
+    /// </summary>
+    private async void OnAddStoreAppClicked(object sender, RoutedEventArgs e)
+    {
+        var search  = new TextBox { PlaceholderText = "Search apps", IsEnabled = false };
+        var loading = new ProgressRing { IsActive = true, Width = 32, Height = 32, Margin = new Thickness(0, 48, 0, 48) };
+        var message = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 24, 0, 24) };
+        var list    = new ListView
+        {
+            Height        = 360,
+            SelectionMode = ListViewSelectionMode.Single,
+            Visibility    = Visibility.Collapsed,
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(list, "Installed apps");
+
+        var panel = new StackPanel { Spacing = 8, Width = 420 };
+        panel.Children.Add(search);
+        panel.Children.Add(loading);
+        panel.Children.Add(message);
+        panel.Children.Add(list);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot               = Content.XamlRoot,
+            Title                  = "Exclude a Microsoft Store app",
+            Content                = panel,
+            PrimaryButtonText      = "Exclude",
+            CloseButtonText        = "Cancel",
+            DefaultButton          = ContentDialogButton.Primary,
+            IsPrimaryButtonEnabled = false,
+        };
+
+        // One row per installed app (icon and name), made once and reused by the search; the
+        // list holds these rows directly, so there's no data to translate for the list control
+        var rows = new List<(StoreApp App, ListViewItem Row)>();
+        void Show(string filter)
+        {
+            list.Items.Clear();
+            foreach (var (app, row) in rows.Where(r => r.App.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)))
+            {
+                list.Items.Add(row);
+            }
+        }
+        StoreApp? Chosen() => list.SelectedItem is ListViewItem { Tag: string family } ? rows.FirstOrDefault(r => r.App.Family == family).App : null;
+
+        ListViewItem MakeRow(StoreApp app)
+        {
+            var icon = new Image { Width = 24, Height = 24 };
+            if (app.Logo is not null)
+            {
+                // Decodes in the background, at the size shown
+                icon.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(app.Logo) { DecodePixelWidth = 48 };
+            }
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Padding = new Thickness(0, 4, 0, 4) };
+            content.Children.Add(icon);
+            content.Children.Add(new TextBlock { Text = app.Name, VerticalAlignment = VerticalAlignment.Center });
+
+            var row = new ListViewItem { Content = content, Tag = app.Family };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, app.Name);
+            return row;
+        }
+        list.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = Chosen() is not null;
+
+        // Load While Open
+        dialog.Opened += async (_, _) =>
+        {
+            var load = Task.Run(InstalledStoreApps);
+            if (await Task.WhenAny(load, Task.Delay(TimeSpan.FromSeconds(20))) != load || load.IsFaulted)
+            {
+                loading.Visibility = Visibility.Collapsed;
+                message.Text       = "Windows didn't return your installed apps. Try again, or add the app's program file instead.";
+                message.Visibility = Visibility.Visible;
+                return;
+            }
+            rows.AddRange(load.Result.Select(app => (app, MakeRow(app))));
+            Show("");
+            loading.Visibility = Visibility.Collapsed;
+            list.Visibility    = Visibility.Visible;
+            search.IsEnabled   = true;
+            search.Focus(FocusState.Programmatic);
+        };
+        search.TextChanged += (_, _) => Show(search.Text);
+
+        // Only one dialog can be open at a time
+        try
+        {
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary || Chosen() is not { } chosen)
+            {
+                return;
+            }
+            await AddExcludedAppAsync(chosen.Name, null, chosen.Family);
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex);
+        }
+    }
+
+    private sealed record StoreApp(string Name, string Family, Uri? Logo);
+
+    /// <summary>
+    /// Installed Store apps for this account that you can open from Start (no frameworks,
+    /// resource packs, add-on bundles, or hidden Windows parts), one per package family, sorted by name.
+    /// </summary>
+    private static List<StoreApp> InstalledStoreApps()
+    {
+        var found = new Dictionary<string, StoreApp>();
+        foreach (var package in new Windows.Management.Deployment.PackageManager().FindPackagesForUser(""))
+        {
+            try
+            {
+                if (package.IsFramework || package.IsResourcePackage || package.IsBundle)
+                {
+                    continue;
+                }
+
+                // Only apps you can open from Start, like the app picker in Windows Settings (this
+                // leaves out Windows' own parts, such as App Resolver or AsyncTextService)
+                if (package.GetAppListEntries().Count == 0)
+                {
+                    continue;
+                }
+                var name = package.DisplayName;
+                if (string.IsNullOrWhiteSpace(name) || name.StartsWith("ms-resource:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                found[package.Id.FamilyName] = new StoreApp(name, package.Id.FamilyName, package.Logo);
+            }
+            catch (Exception ex) when (ex is ArgumentException or System.Runtime.InteropServices.COMException or FileNotFoundException)
+            {
+                // A package that's mid-install or broken: leave it out
+            }
+        }
+        return [.. found.Values.OrderBy(a => a.Name, StringComparer.CurrentCultureIgnoreCase)];
+    }
+
+    // =========================================================================
     // CONNECTION PROBLEMS
     // =========================================================================
 
     /// <summary>
-    /// One card per host Coffee Filter broke, with an Exclude button. Hidden when empty.
+    /// One card per host Coffee Filter broke, with an Exclude button, on the Connection problems
+    /// page; the main page's card shows how many.
     /// </summary>
-    private void BuildProblems(List<Problem> problems, List<string> exclusions)
+    private void BuildProblems(List<Problem> problems)
     {
         var key = string.Join("\n", problems.Select(p => $"{p.Host}|{p.Count}"));
         if (key == _problemsKey)
@@ -550,22 +844,27 @@ public sealed partial class MainWindow : Window
         }
         _problemsKey = key;
 
-        ProblemsSection.Visibility = problems.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        ProblemsCard.Description   = problems.Count == 1 ? "1 app or site" : $"{problems.Count} apps or sites";
-        ProblemsCard.Items.Clear();
+        ProblemsCard.Description = problems.Count switch
+        {
+            0 => "No problems so far",
+            1 => "1 app or site couldn't connect",
+            _ => $"{problems.Count} apps or sites couldn't connect",
+        };
+        ProblemsList.Children.Clear();
+
+        // Empty State
+        if (problems.Count == 0)
+        {
+            ProblemsList.Children.Add(Row(new SettingsCard { Header = "No connection problems" }));
+        }
 
         foreach (var problem in problems)
         {
             var when    = DateTimeOffset.FromUnixTimeSeconds(problem.Last).ToLocalTime();
             var exclude = new Button { Content = "Exclude" };
-            exclude.Click += async (_, _) =>
-            {
-                // The current list, not the one from when this card was made
-                var hosts = new JsonArray([.. _exclusions.Append(problem.Host).Select(h => (JsonNode)h)]);
-                await _app.RunAsync("set_exclusions", new JsonObject { ["hosts"] = hosts }, lists: true);
-            };
+            exclude.Click += async (_, _) => await _app.RunAsync("add_exclusion", new JsonObject { ["host"] = problem.Host }, lists: true);
 
-            ProblemsCard.Items.Add(Row(new SettingsCard
+            ProblemsList.Children.Add(Row(new SettingsCard
             {
                 Header      = problem.Host,
                 Description = $"{problem.Detail} {problem.Count:N0}× · last {when:t}",
@@ -620,7 +919,7 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// Bring the window in front of the browser. Windows normally won't let a background app
     /// take the front, so briefly share input with the window that's in front, which lets it.
-    /// Only used when the user asked for this window (an Install button).
+    /// Only used when the user asked for this window (an Install or Exclude button on a web page).
     /// </summary>
     private void BringToFront()
     {
@@ -716,6 +1015,7 @@ public sealed partial class MainWindow : Window
     private SettingsCard ListCard(string name, string url, bool enabled, bool removable, string setCommand, string removeCommand)
     {
         var toggle = new ToggleSwitch { IsOn = enabled };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(toggle, name);
         toggle.Toggled += async (_, _) => await _app.RunAsync(setCommand, new JsonObject { ["name"] = name, ["enabled"] = toggle.IsOn }, lists: true);
 
         var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
