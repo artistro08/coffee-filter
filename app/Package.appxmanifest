@@ -4,9 +4,11 @@
     xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
     xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
     xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
-    IgnorableNamespaces="uap rescap desktop6">
+    xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+    xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+    IgnorableNamespaces="uap rescap desktop6 com desktop">
 
-    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.1.0" />
+    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.2.2" />
 
     <Properties>
         <DisplayName>Coffee Filter</DisplayName>
@@ -45,6 +47,18 @@
                         <uap:DisplayName>Coffee Filter</uap:DisplayName>
                     </uap:Protocol>
                 </uap:Extension>
+
+                <!-- Clicking A Notification Opens The App (on the page it's about) -->
+                <desktop:Extension Category="windows.toastNotificationActivation">
+                    <desktop:ToastNotificationActivation ToastActivatorCLSID="D5FC964D-176B-4C4E-82F7-8A3B9416DEF4" />
+                </desktop:Extension>
+                <com:Extension Category="windows.comServer">
+                    <com:ComServer>
+                        <com:ExeServer Executable="CoffeeFilter.exe" DisplayName="Coffee Filter" Arguments="----AppNotificationActivated:">
+                            <com:Class Id="D5FC964D-176B-4C4E-82F7-8A3B9416DEF4" />
+                        </com:ExeServer>
+                    </com:ComServer>
+                </com:Extension>
             </Extensions>
         </Application>
     </Applications>

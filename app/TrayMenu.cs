@@ -259,7 +259,7 @@ public sealed partial class TrayMenu
     private static partial nuint SHAppBarMessage(uint message, ref APPBARDATA data);
 
     [LibraryImport("user32.dll")]
-    private static partial nint GetForegroundWindow();
+    internal static partial nint GetForegroundWindow();
 
     [LibraryImport("user32.dll", EntryPoint = "GetClassNameW")]
     private static unsafe partial int GetClassName(nint hwnd, char* name, int max);
@@ -267,7 +267,7 @@ public sealed partial class TrayMenu
     /// <summary>
     /// The Windows 11 hidden-icons panel (or the classic overflow window).
     /// </summary>
-    private static unsafe bool IsShellOverflow(nint hwnd)
+    internal static unsafe bool IsShellOverflow(nint hwnd)
     {
         var name   = stackalloc char[64];
         var length = GetClassName(hwnd, name, 64);

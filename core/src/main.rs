@@ -500,12 +500,19 @@ async fn main() {
     let _ = stdout.write_all(format!("{ready}\n").as_bytes()).await;
     let _ = stdout.flush().await;
 
-    // Command Loop
-    let ending = windows_ending();
+    // Command Loop. A host that just started having problems is announced between replies
+    // ({"event":"problem"}), so the app can notify without polling.
+    let mut found = app.problems.subscribe();
+    let ending    = windows_ending();
     tokio::pin!(ending);
     loop {
         let line = tokio::select! {
             line = lines.next_line() => line,
+            Some(problem) = found.recv() => {
+                let _ = stdout.write_all(format!("{}\n", json!({ "ok": true, "event": "problem", "problem": problem })).as_bytes()).await;
+                let _ = stdout.flush().await;
+                continue;
+            }
             _ = &mut ending => break,
         };
         let line = match line {

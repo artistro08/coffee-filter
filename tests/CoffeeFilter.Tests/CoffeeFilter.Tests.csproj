@@ -15,9 +15,10 @@
         <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     </ItemGroup>
 
-    <!-- Code Under Test (CoreClient has no WinUI dependency) -->
+    <!-- Code Under Test (CoreClient and Hotkey have no WinUI dependency) -->
     <ItemGroup>
         <Compile Include="..\..\app\CoreClient.cs" Link="CoreClient.cs" />
+        <Compile Include="..\..\app\Hotkey.cs" Link="Hotkey.cs" />
         <None Include="..\..\core\target\release\coffee-filter-core.exe"
               Link="coffee-filter-core.exe"
               CopyToOutputDirectory="PreserveNewest" />

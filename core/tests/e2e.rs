@@ -57,10 +57,16 @@ impl Core {
         (core, ready)
     }
 
+    /// The next reply; problem announcements in between are skipped.
     fn read(&mut self) -> Value {
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).unwrap();
-        serde_json::from_str(&line).unwrap()
+        loop {
+            let mut line = String::new();
+            self.stdout.read_line(&mut line).unwrap();
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value["event"] != "problem" {
+                return value;
+            }
+        }
     }
 
     fn send(&mut self, cmd: Value) -> Value {

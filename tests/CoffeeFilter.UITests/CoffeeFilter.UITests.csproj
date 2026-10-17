@@ -16,6 +16,11 @@
         <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     </ItemGroup>
 
+    <!-- Reads the saved shortcut the same way the app does -->
+    <ItemGroup>
+        <Compile Include="..\..\app\Hotkey.cs" Link="Hotkey.cs" />
+    </ItemGroup>
+
     <ItemGroup>
         <Using Include="Xunit" />
     </ItemGroup>

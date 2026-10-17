@@ -29,6 +29,12 @@ public class AppSettings
     /// </summary>
     public string? CertSetupVersion { get; set; }
 
+    /// <summary>
+    /// Global shortcuts you changed, by action name ("OpenFlyout": "Win+Alt+C"); "" means
+    /// removed. Actions not listed use their default (see Shortcuts.DefaultFor).
+    /// </summary>
+    public Dictionary<string, string> Shortcuts { get; set; } = [];
+
     public static AppSettings Load()
     {
         try

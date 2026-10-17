@@ -30,7 +30,8 @@ public sealed class AppFixture : IDisposable
         var process = Retry.WhileNull(() => Process.GetProcessesByName("CoffeeFilter").FirstOrDefault(), TimeSpan.FromSeconds(20)).Result
             ?? throw new InvalidOperationException("Coffee Filter didn't start.");
         _app   = Application.Attach(process);
-        Window = Retry.WhileNull(() => _app.GetMainWindow(_automation), TimeSpan.FromSeconds(20)).Result
+        // By name: the tray flyout is a window of its own
+        Window = Retry.WhileNull(() => _app.GetAllTopLevelWindows(_automation).FirstOrDefault(w => w.Name == "Coffee Filter"), TimeSpan.FromSeconds(20)).Result
             ?? throw new InvalidOperationException("Coffee Filter's window didn't open.");
 
         // Wait for the filter lists to load (the main page shows its sections then)

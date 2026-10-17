@@ -107,6 +107,16 @@ public class CoreReply
     /// Only on replies to the "log" command.
     /// </summary>
     public List<LogEntry>? Log { get; set; }
+
+    /// <summary>
+    /// "ready" on the first line; "problem" on an announcement that isn't a reply.
+    /// </summary>
+    public string? Event { get; set; }
+
+    /// <summary>
+    /// The host that just started having problems, on a "problem" announcement.
+    /// </summary>
+    public Problem? Problem { get; set; }
 }
 
 /// <summary>
@@ -114,16 +124,24 @@ public class CoreReply
 /// one JSON object per line. No network control port is opened. If this app exits
 /// or crashes, the core sees stdin close, stops the proxy, and restores proxy settings.
 /// If the core exits on its own, <see cref="Exited"/> fires so the app can restart it.
+/// Between replies the core can announce a new connection problem, which raises
+/// <see cref="ProblemFound"/> instead of being taken for a reply.
 /// </summary>
 public sealed class CoreClient : IDisposable
 {
     private readonly Process _process;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly System.Threading.Channels.Channel<CoreReply> _replies = System.Threading.Channels.Channel.CreateUnbounded<CoreReply>();
 
     /// <summary>
     /// The core process ended (on a thread pool thread).
     /// </summary>
     public event Action? Exited;
+
+    /// <summary>
+    /// A host just started having connection problems (on a thread pool thread).
+    /// </summary>
+    public event Action<Problem>? ProblemFound;
 
     /// <param name="exited">Called when the core ends; wired before it starts, so even an instant exit is seen.</param>
     public CoreClient(Action? exited = null)
@@ -153,6 +171,33 @@ public sealed class CoreClient : IDisposable
         {
             throw new InvalidOperationException("Could not start coffee-filter-core.exe");
         }
+        _ = Task.Run(ReadLinesAsync);
+    }
+
+    /// <summary>
+    /// Reads every line the core writes: announcements go to their event, replies wait in
+    /// order for the command that asked. Ends when the core does.
+    /// </summary>
+    private async Task ReadLinesAsync()
+    {
+        try
+        {
+            while (await _process.StandardOutput.ReadLineAsync() is { } line)
+            {
+                var reply = JsonSerializer.Deserialize(line, CoreJson.Default.CoreReply)!;
+                if (reply is { Event: "problem", Problem: { } problem })
+                {
+                    ProblemFound?.Invoke(problem);
+                    continue;
+                }
+                _replies.Writer.TryWrite(reply);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException or JsonException)
+        {
+            // Pipe closed or garbled: same as the core stopping
+        }
+        _replies.Writer.TryComplete();
     }
 
     /// <summary>
@@ -183,9 +228,14 @@ public sealed class CoreClient : IDisposable
 
     private async Task<CoreReply> ReadReplyAsync()
     {
-        var line = await _process.StandardOutput.ReadLineAsync()
-            ?? throw new InvalidOperationException("The filter core stopped unexpectedly.");
-        return JsonSerializer.Deserialize(line, CoreJson.Default.CoreReply)!;
+        try
+        {
+            return await _replies.Reader.ReadAsync();
+        }
+        catch (System.Threading.Channels.ChannelClosedException)
+        {
+            throw new InvalidOperationException("The filter core stopped unexpectedly.");
+        }
     }
 
     /// <summary>

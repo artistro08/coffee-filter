@@ -45,6 +45,16 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 
 > Userscripts run as the page itself (like `@grant none`), not with extension powers. So `GM_xmlhttpRequest` follows the browser's normal cross-site rules, saved values live in the site's own storage (the site can read them), and `GM_registerMenuCommand` does nothing. Only add scripts you trust: they can see and change everything on the pages they run on.
 
+### Tray Flyout and Shortcuts
+
+Click the tray icon (or press **Win+Alt+C**) for a small flyout with the **Ad blocking** switch, **Update lists**, **Excluded sites** (type a site and press **Add** to exclude it), and a **Settings** button that opens the window. It slides out of the taskbar wherever your taskbar is, like Windows' own flyouts. Right-click the icon for **Open**, **Ad blocking**, and **Quit**.
+
+Under **Shortcuts**, you can set keyboard shortcuts that work anywhere in Windows: open the flyout, turn ad blocking on or off, update filter lists, and open Coffee Filter. Click a shortcut and press the keys you want. If Windows or another app already uses them, Coffee Filter says so.
+
+### Notifications
+
+When an app starts failing to connect through Coffee Filter (it refuses the certificate), you get a notification. Click it to open **Connection problems**, where you can exclude it. To turn these off, use **Settings › System › Notifications › Coffee Filter** in Windows.
+
 ## Security
 
 - **The CA is unique to your PC.** It's generated on first run and never leaves it. Nothing in this repo can decrypt your traffic.
@@ -120,6 +130,8 @@ The package turns off MSIX registry and file virtualization (`unvirtualizedResou
 
 ### Tests
 
+Run every suite in order with `scripts\test.ps1` (after `scripts\build.ps1` and `scripts\install.ps1`, since the UI tests drive the installed app). Or run them one at a time:
+
 ```bash
 # Unit tests (CA and site certificates, DPAPI, filtering, hosts lists, cosmetic injection, CSP, PAC, config, validation)
 cd core
@@ -182,6 +194,8 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - `app/` — WinUI 3 app, packaged as MSIX
 - `tests/CoffeeFilter.Tests/` — C# tests for the app-to-core link
 - `tests/CoffeeFilter.UITests/` — UI tests that drive the installed app (FlaUI)
+- `scripts/` — `build.ps1`, `install.ps1`, `test.ps1` (every suite), `release.ps1` (only after every test passes)
+- `CLAUDE.md` — notes for coding agents (and people) working on the code: build, test, release, style, known traps
 
 ### Files Used
 
@@ -194,7 +208,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - `%LOCALAPPDATA%\CoffeeFilter\engine.dat`, `engine.key` — saved compiled filter engine
 - `%LOCALAPPDATA%\CoffeeFilter\proxy-backup.json` — your proxy settings while blocking is on
 - `%LOCALAPPDATA%\CoffeeFilter\problems.json` — connections Coffee Filter broke, for troubleshooting
-- `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, blocking on or off, certificate setup version)
+- `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, blocking on or off, shortcuts, certificate setup version)
 - `%LOCALAPPDATA%\CoffeeFilter\app-errors.log` — app errors, if any
 
 ## License

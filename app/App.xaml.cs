@@ -22,6 +22,9 @@ public partial class App : Application
     private MainWindow? _window;
     private TaskbarIcon? _tray;
     private TrayMenu? _trayMenu;
+    private FlyoutWindow? _flyout;
+    private readonly List<Problem> _found = [];
+    private DispatcherQueueTimer? _foundTimer;
     private bool _running;
     private bool _quitting;
     private bool _openedByLink;
@@ -36,6 +39,8 @@ public partial class App : Application
 
     public CoreClient Core { get; private set; } = null!;
     public AppSettings Settings { get; } = AppSettings.Load();
+    public Shortcuts Shortcuts { get; private set; } = null!;
+    public Notifications Notifications { get; } = new();
 
     /// <summary>
     /// Latest reply from the core, so a newly opened window can render immediately.
@@ -86,6 +91,15 @@ public partial class App : Application
         SetTrayVisible(Settings.ShowTrayIcon);
         _uiSettings.ColorValuesChanged += (_, _) => _dispatcher.TryEnqueue(UpdateTrayIconTheme);
 
+        // Notifications: a click opens the page it's about
+        Notifications.Invoked += page => _dispatcher.TryEnqueue(() => Activate(new AppLink(page, "")));
+        Notifications.Register();
+
+        // Global Shortcuts
+        Shortcuts          = new Shortcuts();
+        Shortcuts.Pressed += OnShortcut;
+        Shortcuts.Apply(Settings);
+
         var link = ReadLink(AppInstance.GetCurrent().GetActivatedEventArgs());
         _openedByLink = link is not null;
         Activate(link);
@@ -106,6 +120,7 @@ public partial class App : Application
         try
         {
             core = new CoreClient(() => _dispatcher?.TryEnqueue(() => OnCoreExited(core!)));
+            core.ProblemFound += problem => _dispatcher?.TryEnqueue(() => OnProblemFound(problem));
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
@@ -243,6 +258,101 @@ public partial class App : Application
     }
 
     // =========================================================================
+    // NOTIFICATIONS
+    // =========================================================================
+
+    /// <summary>
+    /// A host just started having connection problems. Problems often come several at once
+    /// (an app talks to a few hosts), so they're collected for 2 seconds and shown as one
+    /// notification. A click opens Connection problems.
+    /// </summary>
+    private void OnProblemFound(Problem problem)
+    {
+        _found.Add(problem);
+        if (_foundTimer is null)
+        {
+            _foundTimer             = _dispatcher!.CreateTimer();
+            _foundTimer.Interval    = TimeSpan.FromSeconds(2);
+            _foundTimer.IsRepeating = false;
+            _foundTimer.Tick       += (_, _) => NotifyProblems();
+        }
+        // Starting a running timer restarts it
+        _foundTimer.Start();
+
+        // An open window shows it right away
+        if (_window is not null)
+        {
+            _ = RunAsync("status", showErrors: false);
+        }
+    }
+
+    private void NotifyProblems()
+    {
+        var hosts = _found.Select(p => p.Host).Distinct().ToList();
+        if (hosts.Count == 0)
+        {
+            return;
+        }
+        var (title, message) = hosts.Count switch
+        {
+            1 => ($"{hosts[0]} couldn't connect", _found[^1].Detail),
+            2 => ("2 sites couldn't connect", $"{hosts[0]} and {hosts[1]}. Exclude them in Connection problems if something isn't working."),
+            _ => ($"{hosts.Count} sites couldn't connect", $"{hosts[0]}, {hosts[1]}, and {hosts.Count - 2} more. Exclude them in Connection problems if something isn't working."),
+        };
+        _found.Clear();
+        Notifications.Show(title, message, open: "problems", tag: "problems");
+    }
+
+    // =========================================================================
+    // SHORTCUTS
+    // =========================================================================
+
+    /// <summary>
+    /// A global shortcut was pressed. Turning ad blocking on or off and updating lists happen
+    /// in the background, so a notification says how it went.
+    /// </summary>
+    private async void OnShortcut(ShortcutAction action)
+    {
+        switch (action)
+        {
+            case ShortcutAction.OpenFlyout:
+                ToggleFlyout(atCursor: false);
+                break;
+            case ShortcutAction.OpenApp:
+                ShowWindow();
+                break;
+            case ShortcutAction.ToggleBlocking:
+                if (Last?.Status is not { CertInstalled: true })
+                {
+                    Notifications.Show("Ad blocking needs the certificate", "Open Coffee Filter to install it.", tag: "blocking");
+                    return;
+                }
+                var toggled = await RunAsync(_running ? "stop" : "start", showErrors: false);
+                if (toggled is { Ok: true })
+                {
+                    Notifications.Show(_running ? "Ad blocking is on" : "Ad blocking is off", "", tag: "blocking");
+                }
+                else
+                {
+                    Notifications.Show("Couldn't change ad blocking", toggled?.Error ?? "The filter core isn't responding.", tag: "blocking");
+                }
+                break;
+            case ShortcutAction.UpdateLists:
+                Notifications.Show("Updating filter lists…", "", tag: "update");
+                var updated = await RunAsync("update_lists", showErrors: false, lists: true);
+                if (updated is { Ok: true })
+                {
+                    Notifications.Show("Filter lists are up to date", "", tag: "update");
+                }
+                else
+                {
+                    Notifications.Show("Some filter lists couldn't update", updated?.Error ?? "The filter core isn't responding.", tag: "update");
+                }
+                break;
+        }
+    }
+
+    // =========================================================================
     // WINDOW
     // =========================================================================
 
@@ -340,7 +450,7 @@ public partial class App : Application
     /// <summary>
     /// A coffee-filter:// link from a web page: what it asks for, and its one value.
     /// </summary>
-    /// <param name="Action">"install" (a userscript page's Install button) or "exclude" (the blocked page's Exclude button).</param>
+    /// <param name="Action">"install" (a userscript page's Install button), "exclude" (the blocked page's Exclude button), or a notification's page ("main" or "problems").</param>
     /// <param name="Value">The script address, or the site name.</param>
     private sealed record AppLink(string Action, string Value);
 
@@ -352,6 +462,11 @@ public partial class App : Application
     {
         try
         {
+            // A notification clicked while the app wasn't running
+            if (args.Kind == ExtendedActivationKind.AppNotification && args.Data is Microsoft.Windows.AppNotifications.AppNotificationActivatedEventArgs notification)
+            {
+                return notification.Arguments.TryGetValue(Notifications.OpenArgument, out var page) ? new AppLink(page, "") : null;
+            }
             if (args.Kind != ExtendedActivationKind.Protocol || args.Data is not Windows.ApplicationModel.Activation.IProtocolActivatedEventArgs { Uri: { } uri })
             {
                 return null;
@@ -398,18 +513,25 @@ public partial class App : Application
     private void Activate(AppLink? link)
     {
         ShowWindow();
-        if (link is null)
+        switch (link?.Action)
         {
-            return;
+            case "install":
+                _ = _window!.AddUserscriptAsync(link.Value, fromLink: true);
+                break;
+            case "exclude":
+                _ = _window!.ExcludeSiteAsync(link.Value);
+                break;
+            case "problems":
+                _window!.ShowProblems();
+                break;
         }
-        _ = link.Action == "install"
-            ? _window!.AddUserscriptAsync(link.Value, fromLink: true)
-            : _window!.ExcludeSiteAsync(link.Value);
     }
 
     public void Quit()
     {
         _quitting = true;
+        Shortcuts.Suspend();
+        Notifications.Unregister();
         _tray?.Dispose();
         _window?.Close();
         Core.Dispose();
@@ -421,15 +543,33 @@ public partial class App : Application
     // =========================================================================
 
     /// <summary>
-    /// The tray icon is declared in App.xaml; its right-click menu is a TrayMenu, which keeps
-    /// it clear of the taskbar. This wires up the commands.
+    /// Open the tray flyout, or close it if it's open.
+    /// </summary>
+    /// <param name="atCursor">On the monitor under the cursor (a tray click); otherwise the main taskbar's.</param>
+    public void ToggleFlyout(bool atCursor)
+    {
+        try
+        {
+            (_flyout ??= new FlyoutWindow()).Toggle(atCursor);
+        }
+        catch (Exception ex)
+        {
+            // A flyout glitch must never take blocking down with it; log it and open the window instead
+            LogError(ex);
+            ShowWindow();
+        }
+    }
+
+    /// <summary>
+    /// The tray icon is declared in App.xaml. A click opens the flyout; its right-click menu is
+    /// a TrayMenu, which keeps it clear of the taskbar. This wires up the commands.
     /// </summary>
     private void CreateTray()
     {
         _tray     = (TaskbarIcon)Resources["TrayIcon"];
         _trayMenu = new TrayMenu(ShowWindow, async () => await RunAsync(_running ? "stop" : "start"), Quit);
 
-        ((XamlUICommand)Resources["OpenCommand"]).ExecuteRequested += (_, _) => ShowWindow();
+        ((XamlUICommand)Resources["OpenCommand"]).ExecuteRequested += (_, _) => ToggleFlyout(atCursor: true);
         ((XamlUICommand)Resources["MenuCommand"]).ExecuteRequested += (_, _) =>
         {
             try

@@ -19,7 +19,7 @@ public sealed class WindowTests(AppFixture app)
     public void MainPageShowsEverySection()
     {
         app.GoHome();
-        foreach (var section in new[] { "Protection", "Filter lists", "Userscripts", "Exclusions", "App", "About" })
+        foreach (var section in new[] { "Protection", "Filter lists", "Userscripts", "Exclusions", "Shortcuts", "App", "About" })
         {
             Assert.NotNull(app.Find(section));
         }

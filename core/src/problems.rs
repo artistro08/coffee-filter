@@ -23,6 +23,7 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{
     Event, Id, Level, Metadata, Subscriber,
     field::{Field, Visit},
@@ -48,9 +49,23 @@ pub struct Problems {
     map:   Mutex<HashMap<String, Problem>>,
     /// Changed since the last save to problems.json.
     dirty: AtomicBool,
+    /// Where a host that just became a problem is sent, so the app can notify right away.
+    found: OnceLock<UnboundedSender<Problem>>,
+}
+
+/// Hang-ups only count once they repeat; browsers drop the odd connection on their own.
+fn shown(p: &Problem) -> bool {
+    p.kind != "app_hung_up" || p.count >= 3
 }
 
 impl Problems {
+    /// Hosts that newly show up in the list, from now on.
+    pub fn subscribe(&self) -> UnboundedReceiver<Problem> {
+        let (tx, rx) = unbounded_channel();
+        let _ = self.found.set(tx);
+        rx
+    }
+
     pub fn record(&self, host: &str, kind: &'static str, detail: String) {
         let now     = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut map = self.map.lock().unwrap();
@@ -63,11 +78,19 @@ impl Problems {
             map.remove(&oldest);
         }
         let entry = map.entry(host.to_string()).or_insert_with(|| Problem { host: host.to_string(), kind, detail: String::new(), count: 0, last: 0 });
+        let was   = entry.count > 0 && shown(entry);
         entry.kind   = kind;
         entry.detail = detail;
         entry.count += 1;
         entry.last   = now;
         self.dirty.store(true, Ordering::Relaxed);
+
+        // Only the first time a host shows up, not on every repeat
+        if !was && shown(entry)
+            && let Some(found) = self.found.get()
+        {
+            let _ = found.send(entry.clone());
+        }
     }
 
     /// Keep a copy on disk for troubleshooting. Called from the command loop, not from the
@@ -81,10 +104,9 @@ impl Problems {
         }
     }
 
-    /// Most recent first. Hang-ups only count once they repeat; browsers drop the odd
-    /// connection on their own.
+    /// Most recent first, only the ones worth showing.
     pub fn list(&self) -> Vec<Problem> {
-        let mut list: Vec<Problem> = self.map.lock().unwrap().values().filter(|p| p.kind != "app_hung_up" || p.count >= 3).cloned().collect();
+        let mut list: Vec<Problem> = self.map.lock().unwrap().values().filter(|p| shown(p)).cloned().collect();
         list.sort_by_key(|p| Reverse(p.last));
         list
     }
@@ -245,6 +267,23 @@ mod tests {
             p.record(&format!("h{i}.com"), "app_rejected_certificate", "x".into());
         }
         assert!(p.list().len() <= MAX_HOSTS);
+    }
+
+    #[test]
+    fn announces_each_host_once_when_it_shows_up() {
+        let p       = Problems::default();
+        let mut rx  = p.subscribe();
+        p.record("pinned.com", "app_rejected_certificate", "x".into());
+        p.record("pinned.com", "app_rejected_certificate", "x".into());
+        p.record("strict.com", "app_hung_up", "x".into());
+        p.record("strict.com", "app_hung_up", "x".into());
+        assert_eq!(rx.try_recv().unwrap().host, "pinned.com");
+        assert!(rx.try_recv().is_err(), "repeats and single hang-ups stay quiet");
+        p.record("strict.com", "app_hung_up", "x".into());
+        assert_eq!(rx.try_recv().unwrap().host, "strict.com");
+        p.clear();
+        p.record("pinned.com", "app_rejected_certificate", "x".into());
+        assert_eq!(rx.try_recv().unwrap().host, "pinned.com", "again after Clear");
     }
 
     #[test]

@@ -153,6 +153,17 @@
                     </toolkit:SettingsExpander>
                     <!-- /Exclusions -->
 
+                    <!-- Shortcuts -->
+                    <TextBlock Text="Shortcuts" Style="{StaticResource SectionHeader}" />
+                    <toolkit:SettingsExpander x:Name="ShortcutsCard"
+                                              Header="Keyboard shortcuts"
+                                              Description="Work anywhere in Windows, even with this window closed.">
+                        <toolkit:SettingsExpander.HeaderIcon>
+                            <FontIcon Glyph="&#xE765;" />
+                        </toolkit:SettingsExpander.HeaderIcon>
+                    </toolkit:SettingsExpander>
+                    <!-- /Shortcuts -->
+
                     <!-- App -->
                     <TextBlock Text="App" Style="{StaticResource SectionHeader}" />
                     <toolkit:SettingsCard Header="Show tray icon"
