@@ -241,12 +241,19 @@ public sealed class CoreClient : IDisposable
     /// <summary>
     /// Closing stdin tells the core to stop cleanly and restore proxy settings.
     /// </summary>
-    public void Dispose()
+    public void Dispose() => Dispose(5000);
+
+    /// <summary>
+    /// Stop the core, waiting at most <paramref name="waitMs"/> before ending it. The core puts
+    /// the proxy settings back first, then lets open connections finish, so a short wait
+    /// (Windows shutting down) still leaves the settings restored.
+    /// </summary>
+    public void Dispose(int waitMs)
     {
         try
         {
             _process.StandardInput.Close();
-            if (!_process.WaitForExit(5000))
+            if (!_process.WaitForExit(waitMs))
             {
                 _process.Kill();
             }

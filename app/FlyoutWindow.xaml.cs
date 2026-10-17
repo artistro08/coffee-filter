@@ -73,11 +73,16 @@ public sealed partial class FlyoutWindow : Window
         _panelVisual = ElementCompositionPreview.GetElementVisual(SlideHost);
         _compositor  = _panelVisual.Compositor;
 
-        // Esc closes it, like Windows' own flyouts
+        // Esc closes it, like Windows' own flyouts; with the Add site box open, just the box
         var escape = new KeyboardAccelerator { Key = Windows.System.VirtualKey.Escape };
         escape.Invoked += (_, e) =>
         {
             e.Handled = true;
+            if (AddSitePanel.Visibility == Visibility.Visible)
+            {
+                ShowAddSite(false);
+                return;
+            }
             HideFlyout();
         };
         WindowRoot.KeyboardAccelerators.Add(escape);
@@ -226,17 +231,23 @@ public sealed partial class FlyoutWindow : Window
         };
     }
 
+    private void OnAddSiteClicked(object sender, RoutedEventArgs e) => ShowAddSite(AddSitePanel.Visibility == Visibility.Collapsed);
+
     /// <summary>
-    /// Opens (or closes) the box for a site to exclude; the panel grows to fit it.
+    /// Opens or closes the box for a site to exclude; the panel grows to fit it. While it's
+    /// open, Add site turns into Cancel, which closes it and forgets what was typed.
     /// </summary>
-    private void OnAddSiteClicked(object sender, RoutedEventArgs e)
+    private void ShowAddSite(bool open)
     {
-        var open = AddSitePanel.Visibility == Visibility.Collapsed;
         AddSitePanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        AddSiteButton.Content   = open ? "Cancel" : "Add site";
         if (open)
         {
             SiteBox.Focus(FocusState.Programmatic);
+            return;
         }
+        SiteBox.Text = "";
+        AddSiteButton.Focus(FocusState.Programmatic);
     }
 
     private async void OnSiteBoxKeyDown(object sender, KeyRoutedEventArgs e)
@@ -271,8 +282,7 @@ public sealed partial class FlyoutWindow : Window
             var reply = await _app.RunAsync("add_exclusion", new System.Text.Json.Nodes.JsonObject { ["host"] = host }, showErrors: false, lists: true);
             if (reply is { Ok: true })
             {
-                SiteBox.Text            = "";
-                AddSitePanel.Visibility = Visibility.Collapsed;
+                ShowAddSite(false);
                 ShowMessage($"{host} is excluded. Reload its page to apply.", error: false);
             }
             else

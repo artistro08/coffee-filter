@@ -4,11 +4,12 @@
     xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
     xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
     xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+    xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
     xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
     xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
-    IgnorableNamespaces="uap rescap desktop6 com desktop">
+    IgnorableNamespaces="uap uap5 rescap desktop6 com desktop">
 
-    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.2.2" />
+    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.3.0" />
 
     <Properties>
         <DisplayName>Coffee Filter</DisplayName>
@@ -47,6 +48,11 @@
                         <uap:DisplayName>Coffee Filter</uap:DisplayName>
                     </uap:Protocol>
                 </uap:Extension>
+
+                <!-- Start With Windows (opens in the tray; the switch is in App settings) -->
+                <uap5:Extension Category="windows.startupTask">
+                    <uap5:StartupTask TaskId="CoffeeFilterStartup" Enabled="true" DisplayName="Coffee Filter" />
+                </uap5:Extension>
 
                 <!-- Clicking A Notification Opens The App (on the page it's about) -->
                 <desktop:Extension Category="windows.toastNotificationActivation">

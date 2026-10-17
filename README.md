@@ -158,11 +158,10 @@ dotnet test
 1. Open Coffee Filter. On first launch it asks for admin to install its certificate; say **Yes**. (If you said no, click **Install** on the Certificate card.)
 2. Turn on **Ad blocking**.
 
-That's it! Closing the window keeps blocking running in the background, with a tray icon (you can hide it in **App** settings). Opening Coffee Filter again brings the window back. **Quit** stops blocking and puts your proxy settings back.
+That's it! Closing the window keeps blocking running in the background, with a tray icon (you can hide it in **App** settings). Coffee Filter starts with Windows in the tray, and blocking comes back on unless you turned it off last time; turn **Start with Windows** off in **App** settings if you'd rather open it yourself. When Windows shuts down or restarts, Coffee Filter puts your proxy settings back first. Opening Coffee Filter again brings the window back. **Quit** stops blocking and puts your proxy settings back.
 
 ## Known Limits
 
-- **The app doesn't start with Windows.** When you open it, blocking comes back on unless you turned it off last time.
 - **Firefox** trusts the Windows certificate store by default on Windows. If you turned that off, set `security.enterprise_roots.enabled` back to `true` in `about:config`.
 - **Apps with certificate pinning** (some games, banking apps, Discord, etc.) will fail through the proxy. They show up under **Connection problems** with an **Exclude** button.
 - **Strict revocation checking**: tools that hard-fail when revocation can't be checked (like Windows `curl` without `--ssl-no-revoke`) will fail. Browsers don't.

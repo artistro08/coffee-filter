@@ -88,8 +88,20 @@ public sealed class FlyoutTests(AppFixture app)
         Assert.NotNull(box);
         Assert.NotNull(flyout.FindFirstDescendant(c => c.ByName("Add").And(c.ByControlType(ControlType.Button))));
 
+        // While it's open, Add site is Cancel, which closes the box
+        var cancel = flyout.FindFirstDescendant(c => c.ByName("Cancel").And(c.ByControlType(ControlType.Button)));
+        Assert.NotNull(cancel);
+        cancel.Patterns.Invoke.Pattern.Invoke();
+        Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Site to exclude")), TimeSpan.FromSeconds(3)).Success, "Cancel didn't close the box");
+        Assert.NotNull(flyout.FindFirstDescendant(c => c.ByName("Add site").And(c.ByControlType(ControlType.Button))));
+
+        // Esc with the box open closes only the box
         flyout.FindFirstDescendant(c => c.ByName("Add site").And(c.ByControlType(ControlType.Button))).Patterns.Invoke.Pattern.Invoke();
-        Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Site to exclude")), TimeSpan.FromSeconds(3)).Success, "Add site didn't close its box");
+        Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Site to exclude")), TimeSpan.FromSeconds(3));
+        Keyboard.Type(VirtualKeyShort.ESCAPE);
+        Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Site to exclude")), TimeSpan.FromSeconds(3)).Success, "Esc didn't close the box");
+        Assert.NotNull(FindFlyout());
+
         Keyboard.Type(VirtualKeyShort.ESCAPE);
         Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3));
     }

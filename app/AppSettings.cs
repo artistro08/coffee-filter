@@ -30,6 +30,11 @@ public class AppSettings
     public string? CertSetupVersion { get; set; }
 
     /// <summary>
+    /// Start with Windows was turned on once at first run (after that it's your choice).
+    /// </summary>
+    public bool StartupSet { get; set; }
+
+    /// <summary>
     /// Global shortcuts you changed, by action name ("OpenFlyout": "Win+Alt+C"); "" means
     /// removed. Actions not listed use their default (see Shortcuts.DefaultFor).
     /// </summary>

@@ -15,8 +15,10 @@ public enum ShortcutAction
 }
 
 /// <summary>
-/// Global shortcuts, registered with <c>RegisterHotKey</c> on a hidden message-only window whose
-/// <c>WM_HOTKEY</c> raises <see cref="Pressed"/>. Adapted from MagicBuds' and Leaf Calendar's
+/// Global shortcuts, registered with <c>RegisterHotKey</c> on a hidden window whose
+/// <c>WM_HOTKEY</c> raises <see cref="Pressed"/>. The same window hears Windows shutting down,
+/// restarting, or signing out (<see cref="SessionEnding"/>), which is why it's a hidden top-level
+/// window: message-only windows don't get that broadcast. Adapted from MagicBuds' and Leaf Calendar's
 /// GlobalShortcuts. A combination Windows or another app holds can't be taken: it's remembered
 /// as taken, and Settings warns about it. <c>MOD_NOREPEAT</c> keeps a held combination from
 /// firing over and over. Use from the UI thread.
@@ -56,6 +58,13 @@ public sealed partial class Shortcuts
     /// </summary>
     public event Action<ShortcutAction>? Pressed;
 
+    /// <summary>
+    /// Windows is shutting down, restarting, or signing out (true), or a shutdown that was
+    /// asked about was canceled (false). Handlers must finish before returning: Windows ends
+    /// the app soon after.
+    /// </summary>
+    public event Action<bool>? SessionEnding;
+
     public unsafe Shortcuts()
     {
         s_instance = this;
@@ -69,7 +78,8 @@ public sealed partial class Shortcuts
                 lpszClassName = (nint)name,
             };
             RegisterClassExW(windowClass);
-            _hwnd = CreateWindowExW(0, "CoffeeFilterShortcuts", "", 0, 0, 0, 0, 0, HwndMessage, 0, windowClass.hInstance, 0);
+            // Never shown, and a tool window, so it's never in Alt+Tab or the taskbar
+            _hwnd = CreateWindowExW(WsExToolWindow, "CoffeeFilterShortcuts", "", 0, 0, 0, 0, 0, 0, 0, windowClass.hInstance, 0);
         }
     }
 
@@ -157,6 +167,26 @@ public sealed partial class Shortcuts
             }
             return 0;
         }
+
+        // Shutdown, restart, or sign-out: asked first (the app agrees, after cleaning up), then
+        // confirmed, or canceled when another app refused
+        if (message is WmQueryEndSession or WmEndSession)
+        {
+            var ending = message == WmQueryEndSession;
+            if (message == WmEndSession && wParam != 0)
+            {
+                return 0;
+            }
+            try
+            {
+                s_instance?.SessionEnding?.Invoke(ending);
+            }
+            catch (Exception ex)
+            {
+                App.LogError(ex);
+            }
+            return ending ? 1 : 0;
+        }
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
@@ -166,7 +196,9 @@ public sealed partial class Shortcuts
 
     private const uint WmHotkey    = 0x0312;
     private const uint ModNoRepeat = 0x4000;
-    private const nint HwndMessage = -3;
+    private const uint WmQueryEndSession = 0x0011;
+    private const uint WmEndSession      = 0x0016;
+    private const uint WsExToolWindow    = 0x00000080;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WNDCLASSEXW

@@ -82,6 +82,7 @@ public sealed partial class MainWindow : Window
         TraySwitch.IsOn       = _app.Settings.ShowTrayIcon;
         AboutCard.Description = $"Version {App.Version}";
         BuildShortcuts();
+        _ = ShowStartupAsync(Startup.GetAsync());
 
         // Bind to Event Listeners
         _app.Changed += OnChanged;
@@ -1417,6 +1418,35 @@ public sealed partial class MainWindow : Window
             return;
         }
         await BusyAsync(AddScriptButton, AddScriptRing, () => _app.RunAsync("add_userscript", new JsonObject { ["url"] = url.Text }, lists: true));
+    }
+
+    /// <summary>
+    /// Shows Windows' startup state on the switch. Turned off in Task Manager (or by policy),
+    /// this app can't turn it back on, so the switch is off-limits and says where to go.
+    /// </summary>
+    private async Task ShowStartupAsync(Task<(bool On, bool CanChange)?> state)
+    {
+        var shown = await state;
+        _updating               = true;
+        StartupSwitch.IsOn      = shown?.On == true;
+        StartupSwitch.IsEnabled = shown?.CanChange == true;
+        _updating               = false;
+        StartupCard.Description = shown switch
+        {
+            null => "Windows couldn't say whether Coffee Filter starts with it.",
+            { CanChange: false, On: false } => "Turned off in Task Manager. Turn it back on there, in Startup apps.",
+            { CanChange: false } => "Your organization turned this on.",
+            _ => "Opens in the tray when you sign in, so ad blocking is on from the start.",
+        };
+    }
+
+    private async void OnStartupToggled(object sender, RoutedEventArgs e)
+    {
+        if (_updating)
+        {
+            return;
+        }
+        await ShowStartupAsync(Startup.SetAsync(StartupSwitch.IsOn));
     }
 
     private void OnTrayToggled(object sender, RoutedEventArgs e)

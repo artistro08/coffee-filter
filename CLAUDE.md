@@ -25,8 +25,9 @@ The core restores the user's proxy settings on stop, crash, logoff, and shutdown
 - `core/build.rs` — puts the coffee icon into the core exe (needs `rc.exe` from the Windows SDK)
 - `app/App.xaml.cs` — core lifecycle, `coffee-filter://` links, tray, flyout, shortcuts, problem notifications, efficiency mode while hidden
 - `app/FlyoutWindow.xaml(.cs)`, `FlyoutChrome.cs` — the tray flyout (left-click or shortcut): see-through window, always-active acrylic, slides out of the taskbar on any edge (ported from MagicBuds)
-- `app/Shortcuts.cs`, `Hotkey.cs` — global shortcuts (`RegisterHotKey` on a message-only window) and the picker's keyboard hook
+- `app/Shortcuts.cs`, `Hotkey.cs` — global shortcuts (`RegisterHotKey` on a hidden window, which also hears Windows shutting down) and the picker's keyboard hook
 - `app/ShortcutControl.xaml(.cs)`, `ShortcutDialogContentControl.xaml(.cs)`, `HotkeySettings.cs`, `KeyVisual.cs`, `KeyVisual.xaml` — PowerToys' shortcut picker and key caps, ported by way of Leaf Calendar and MagicBuds
+- `app/Startup.cs` — Start with Windows (MSIX startup task); at sign-in the app opens in the tray with no window
 - `app/Notifications.cs` — Windows notifications; a click opens the page named in its `open` argument
 - `app/MainWindow.xaml(.cs)` — the window: cards, sub-pages, dialogs, Exclusions, Store app picker
 - `app/CoreClient.cs` — the JSON-lines link to the core (UTF-8 pipes, snake_case source-generated JSON)
@@ -138,6 +139,7 @@ Each of these cost real time; don't relearn them.
 - **Tray icon from a ready `System.Drawing.Icon`**, not `IconSource`: the library converts `IconSource` in the background and the tray icon sometimes appeared blank.
 - **Activation args belong to the launching process.** Read `AppActivationArguments.Data` immediately in the `Activated` handler; after the second instance exits it throws RPC errors.
 - **The packaged app needs every logo size** (`Square44x44Logo.targetsize-*`, `_altform-unplated`, `_altform-lightunplated`, `scale-*` for every tile). Without them the taskbar, Start, and Task Manager show a generic icon. Sources are in `app\Assets\source\` (not packaged).
+- **The tray icon kept moving on every update.** Each MSIX version installs to a new folder, and Windows saved a new tray entry per path. It only carries the icon's place over when the icon's GUID stays the same and the exe is Authenticode-signed by the same publisher, so `App.TrayIconId` is fixed (installed builds only) and `SignNativeExecutable` in the csproj signs `CoffeeFilter.exe` after the AOT link. Never change that GUID. `TrayTests` checks both.
 - **Hand focus to the taskbar only after opening another window.** A closing flyout gives the foreground to `Shell_TrayWnd`; once it has, Windows refuses to bring the main window forward. Open the window first (`FlyoutWindow.OnSettingsClicked`).
 - **`GetForegroundWindow` can return a WinUI window's inner input window** (`InputSiteWindowClass`), not the window itself. Compare with `PopupWindow.Foreground`, which returns the owning top-level window; a raw comparison made the shortcut picker ignore every key.
 - **The app has more than one top-level window** (main window, flyout, tray menu). Find the main window by its name "Coffee Filter", never by "the main window" of the process (`AppFixture`).
@@ -145,6 +147,7 @@ Each of these cost real time; don't relearn them.
 
 ### Windows and Networking
 
+- **The core never hears Windows shut down.** It loads user32, so Windows skips its console shutdown events and just ends it, leaving the PAC setting pointing at a dead port. The app's hidden window (`Shortcuts`, a hidden top-level window, since message-only windows miss the broadcast) answers `WM_QUERYENDSESSION` by stopping the core first (`App.OnSessionEnding`); a canceled shutdown starts it again. `SessionTests` checks both.
 - **Sandboxed Store apps can't reach `127.0.0.1`.** The PAC returns `PROXY 127.0.0.1:18228; DIRECT` so they fall back to direct instead of losing the internet.
 - **Windows Update and Store downloads use the user's proxy and reject any MITM** (0x80240437). `SYSTEM_HOSTS` in `sysproxy.rs` always go direct and are never decrypted.
 - **Qt apps (Stream Deck) reject a fixed proxy**; that's why Windows gets a PAC URL, not `ProxyServer`.

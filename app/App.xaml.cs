@@ -27,7 +27,11 @@ public partial class App : Application
     private DispatcherQueueTimer? _foundTimer;
     private bool _running;
     private bool _quitting;
-    private bool _openedByLink;
+    // Opened by a web page's link or at sign-in: no automatic certificate setup (a site must never
+    // raise an admin prompt, and sign-in is no time for one)
+    private bool _skipCertSetup;
+    private bool _endingSession;
+    private bool _runningAtSessionEnd;
     private bool _coreRefused;
 
     public static App Instance => _instance!;
@@ -96,14 +100,51 @@ public partial class App : Application
         Notifications.Register();
 
         // Global Shortcuts
-        Shortcuts          = new Shortcuts();
-        Shortcuts.Pressed += OnShortcut;
+        Shortcuts                 = new Shortcuts();
+        Shortcuts.Pressed        += OnShortcut;
+        Shortcuts.SessionEnding  += OnSessionEnding;
         Shortcuts.Apply(Settings);
 
-        var link = ReadLink(AppInstance.GetCurrent().GetActivatedEventArgs());
-        _openedByLink = link is not null;
-        Activate(link);
+        // Started at sign-in: stay in the tray, no window
+        var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
+        var atSignIn   = activation.Kind == ExtendedActivationKind.StartupTask;
+        var link       = ReadLink(activation);
+        _skipCertSetup = link is not null || atSignIn;
+        if (!atSignIn)
+        {
+            Activate(link);
+        }
         StartCore(resumeBlocking: Settings.BlockingEnabled);
+        _ = Startup.EnableOnFirstRunAsync(Settings);
+    }
+
+    /// <summary>
+    /// Windows is shutting down, restarting, or signing out. Stop the core now, while Windows
+    /// still waits for the app, so the proxy settings are put back; otherwise Windows ends both
+    /// programs and leaves Windows pointed at a proxy that's gone until the next start. Ad
+    /// blocking stays remembered as on. If the shutdown is canceled, blocking comes back.
+    /// </summary>
+    private void OnSessionEnding(bool ending)
+    {
+        if (ending)
+        {
+            if (_endingSession || _quitting)
+            {
+                return;
+            }
+            _endingSession       = true;
+            _runningAtSessionEnd = _running;
+            // The proxy settings go back within milliseconds; open connections get 2 seconds
+            Core.Dispose(2000);
+            return;
+        }
+
+        if (!_endingSession)
+        {
+            return;
+        }
+        _endingSession = false;
+        StartCore(resumeBlocking: _runningAtSessionEnd);
     }
 
     // =========================================================================
@@ -164,7 +205,7 @@ public partial class App : Application
             // Each new install or update sets up (or renews) the system-wide certificate once;
             // declining doesn't nag until the next version. Not when a web page's link started
             // the app: a site must never be able to raise an admin prompt.
-            if ((!s.CertInstalled || s.CertRenewal is not null) && Settings.CertSetupVersion != Version && !_openedByLink)
+            if ((!s.CertInstalled || s.CertRenewal is not null) && Settings.CertSetupVersion != Version && !_skipCertSetup)
             {
                 Settings.CertSetupVersion = Version;
                 Settings.Save();
@@ -189,7 +230,7 @@ public partial class App : Application
     /// </summary>
     private void OnCoreExited(CoreClient core)
     {
-        if (_quitting || _coreRefused || !ReferenceEquals(core, Core))
+        if (_quitting || _endingSession || _coreRefused || !ReferenceEquals(core, Core))
         {
             return;
         }
@@ -569,6 +610,15 @@ public partial class App : Application
         _tray     = (TaskbarIcon)Resources["TrayIcon"];
         _trayMenu = new TrayMenu(ShowWindow, async () => await RunAsync(_running ? "stop" : "start"), Quit);
 
+        // Installed: one fixed ID, so the icon keeps its place on the taskbar across updates (the
+        // exe is signed for this; see SignNativeExecutable). A build run from its own folder keeps
+        // the library's ID, made from its path: Windows refuses a fixed ID from an unsigned exe
+        // that moved, which would leave no icon at all.
+        if (IsPackaged())
+        {
+            _tray.Id = TrayIconId;
+        }
+
         ((XamlUICommand)Resources["OpenCommand"]).ExecuteRequested += (_, _) => ToggleFlyout(atCursor: true);
         ((XamlUICommand)Resources["MenuCommand"]).ExecuteRequested += (_, _) =>
         {
@@ -588,6 +638,24 @@ public partial class App : Application
         if (Last?.Status is { } s)
         {
             UpdateTrayBlocking(s.Running, s.CertInstalled);
+        }
+    }
+
+    /// <summary>
+    /// The installed app's tray icon ID. Never change it: Windows keeps the icon's place by it.
+    /// </summary>
+    private static readonly Guid TrayIconId = new("2DB25E80-4F5F-404A-B185-79860FEAB53E");
+
+    private static bool IsPackaged()
+    {
+        try
+        {
+            return Windows.ApplicationModel.Package.Current is not null;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            // No package identity: run from a build folder
+            return false;
         }
     }
 

@@ -6,7 +6,7 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
         <RootNamespace>CoffeeFilter</RootNamespace>
-        <Version>0.1.2.2</Version>
+        <Version>0.1.3.0</Version>
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <Platforms>x64</Platforms>
         <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -41,6 +41,14 @@
         <AppxPackageDir>$(MSBuildThisFileDirectory)AppPackages\</AppxPackageDir>
         <GenerateTestArtifacts>false</GenerateTestArtifacts>
     </PropertyGroup>
+
+    <!-- Sign CoffeeFilter.exe Itself (not only the package). Each update installs to a new folder, and
+         Windows only keeps the tray icon where you put it when the icon's ID stays the same and both
+         exes are signed by the same publisher (App.TrayIconId). From MagicBuds' SignAppExecutable,
+         after the Native AOT link instead of the app host. -->
+    <Target Name="SignNativeExecutable" AfterTargets="LinkNative" Condition="'$(PackageCertificateThumbprint)' != '' And Exists('$(NativeBinary)')">
+        <Exec Command="&quot;$(SignAppxPackageExeFullPath)&quot; sign /q /fd SHA256 /sha1 $(PackageCertificateThumbprint) &quot;$(NativeBinary)&quot;" />
+    </Target>
 
     <!-- Icon Source Art (kept in the repo, not shipped) -->
     <ItemGroup>

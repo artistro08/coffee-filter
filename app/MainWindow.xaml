@@ -173,6 +173,14 @@
                         </toolkit:SettingsCard.HeaderIcon>
                         <ToggleSwitch x:Name="TraySwitch" AutomationProperties.Name="Show tray icon" Toggled="OnTrayToggled" />
                     </toolkit:SettingsCard>
+                    <toolkit:SettingsCard x:Name="StartupCard"
+                                          Header="Start with Windows"
+                                          Description="Opens in the tray when you sign in, so ad blocking is on from the start.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE768;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ToggleSwitch x:Name="StartupSwitch" AutomationProperties.Name="Start with Windows" IsEnabled="False" Toggled="OnStartupToggled" />
+                    </toolkit:SettingsCard>
                     <toolkit:SettingsCard Header="Quit Coffee Filter">
                         <toolkit:SettingsCard.HeaderIcon>
                             <FontIcon Glyph="&#xE7E8;" />
