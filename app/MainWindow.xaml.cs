@@ -540,7 +540,7 @@ public sealed partial class MainWindow : Window
             CloseButtonText   = "Cancel",
             DefaultButton     = ContentDialogButton.Primary,
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
         {
             return [];
         }
@@ -582,7 +582,7 @@ public sealed partial class MainWindow : Window
         // Only one dialog can be open at a time
         try
         {
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
             {
                 return;
             }
@@ -600,19 +600,37 @@ public sealed partial class MainWindow : Window
 
     private async void OnAddExclusionClicked(object sender, RoutedEventArgs e)
     {
-        var sites = await AskForSitesAsync(bulk: false);
-        if (sites.Length > 0)
+        // An error here must not close the app (that would stop blocking)
+        try
         {
-            await SaveExclusionsAsync(_exclusions.Concat(sites));
+            var sites = await AskForSitesAsync(bulk: false);
+            if (sites.Length > 0)
+            {
+                await SaveExclusionsAsync(_exclusions.Concat(sites));
+            }
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex);
+            ShowError(ex.Message);
         }
     }
 
     private async void OnBulkExclusionsClicked(object sender, RoutedEventArgs e)
     {
-        var sites = await AskForSitesAsync(bulk: true);
-        if (sites.Length > 0)
+        // An error here must not close the app (that would stop blocking)
+        try
         {
-            await SaveExclusionsAsync(_exclusions.Concat(sites));
+            var sites = await AskForSitesAsync(bulk: true);
+            if (sites.Length > 0)
+            {
+                await SaveExclusionsAsync(_exclusions.Concat(sites));
+            }
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex);
+            ShowError(ex.Message);
         }
     }
 
@@ -645,13 +663,55 @@ public sealed partial class MainWindow : Window
             var delete = new Button { Content = "Delete" };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(delete, $"Delete {app.Name}");
             delete.Click += async (_, _) => await _app.RunAsync("remove_excluded_app", new JsonObject { ["id"] = app.Id }, lists: true);
-            ExcludedAppsCard.Items.Add(Row(new SettingsCard
+            var card = new SettingsCard
             {
                 Header      = app.Name,
                 Description = app.Package is null ? app.Path ?? "" : $"Microsoft Store app · {app.Package}",
                 HeaderIcon  = new FontIcon { Glyph = app.Package is null ? "\uE7AC" : "\uE719" },
                 Content     = delete,
-            }));
+            };
+            ExcludedAppsCard.Items.Add(Row(card));
+            _ = ShowAppIconAsync(card, app);
+        }
+    }
+
+    /// <summary>
+    /// Swap a row's placeholder symbol for the app's real icon: a Store app's package logo, or
+    /// the icon Windows shows for a program file. Looked up off the UI thread; a missing app or
+    /// icon just keeps the symbol.
+    /// </summary>
+    private static async Task ShowAppIconAsync(SettingsCard card, ExcludedApp app)
+    {
+        try
+        {
+            Microsoft.UI.Xaml.Media.ImageSource? icon = null;
+            if (app.Package is { } family)
+            {
+                var logo = await Task.Run(() => new Windows.Management.Deployment.PackageManager().FindPackagesForUser("", family).FirstOrDefault()?.Logo);
+                if (logo is not null)
+                {
+                    icon = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(logo) { DecodePixelWidth = 40 };
+                }
+            }
+            else if (app.Path is { } path && File.Exists(path))
+            {
+                var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
+                using var thumbnail = await file.GetThumbnailAsync(Windows.Storage.FileProperties.ThumbnailMode.SingleItem, 40);
+                if (thumbnail is not null)
+                {
+                    var bitmap = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+                    await bitmap.SetSourceAsync(thumbnail);
+                    icon = bitmap;
+                }
+            }
+            if (icon is not null)
+            {
+                card.HeaderIcon = new ImageIcon { Source = icon, Width = 20, Height = 20 };
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
+        {
+            // Uninstalled or unreadable: the placeholder symbol stays
         }
     }
 
@@ -666,21 +726,30 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void OnAddProgramClicked(object sender, RoutedEventArgs e)
     {
-        var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id)
+        // An error here must not close the app (that would stop blocking)
+        try
         {
-            SuggestedStartLocation = Microsoft.Windows.Storage.Pickers.PickerLocationId.ComputerFolder,
-            CommitButtonText       = "Exclude",
-        };
-        picker.FileTypeFilter.Add(".exe");
+            var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id)
+            {
+                SuggestedStartLocation = Microsoft.Windows.Storage.Pickers.PickerLocationId.ComputerFolder,
+                CommitButtonText       = "Exclude",
+            };
+            picker.FileTypeFilter.Add(".exe");
 
-        var file = await picker.PickSingleFileAsync();
-        if (file is null)
-        {
-            return;
+            var file = await picker.PickSingleFileAsync();
+            if (file is null)
+            {
+                return;
+            }
+            var description = System.Diagnostics.FileVersionInfo.GetVersionInfo(file.Path).FileDescription;
+            var name        = string.IsNullOrWhiteSpace(description) ? Path.GetFileNameWithoutExtension(file.Path) : description.Trim();
+            await AddExcludedAppAsync(name, file.Path, null);
         }
-        var description = System.Diagnostics.FileVersionInfo.GetVersionInfo(file.Path).FileDescription;
-        var name        = string.IsNullOrWhiteSpace(description) ? Path.GetFileNameWithoutExtension(file.Path) : description.Trim();
-        await AddExcludedAppAsync(name, file.Path, null);
+        catch (Exception ex)
+        {
+            App.LogError(ex);
+            ShowError(ex.Message);
+        }
     }
 
     /// <summary>
@@ -735,6 +804,10 @@ public sealed partial class MainWindow : Window
         }
         StoreApp? Chosen() => list.SelectedItem is ListViewItem { Tag: string family } ? rows.FirstOrDefault(r => r.App.Family == family).App : null;
 
+        // Kept Up To Date As You Pick
+        // The list's selection is gone once the dialog has closed, so it's read while the dialog is open
+        StoreApp? chosen = null;
+
         ListViewItem MakeRow(StoreApp app)
         {
             var icon = new Image { Width = 24, Height = 24 };
@@ -751,7 +824,7 @@ public sealed partial class MainWindow : Window
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, app.Name);
             return row;
         }
-        list.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = Chosen() is not null;
+        list.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = (chosen = Chosen()) is not null;
 
         // Load While Open
         dialog.Opened += async (_, _) =>
@@ -776,7 +849,7 @@ public sealed partial class MainWindow : Window
         // Only one dialog can be open at a time
         try
         {
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary || Chosen() is not { } chosen)
+            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary || chosen is null)
             {
                 return;
             }
@@ -945,11 +1018,33 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Open a dialog. Only one can be open at a time, and one that was just closed still counts
+    /// while it animates away, so a quick second dialog would fail; this waits it out.
+    /// </summary>
+    private static async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
+    {
+        const int AsyncNotStarted = unchecked((int)0x80000019);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await dialog.ShowAsync();
+            }
+            catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == AsyncNotStarted && attempt < 20)
+            {
+                await Task.Delay(100);
+            }
+        }
+    }
+
     private void ShowError(string text)
     {
         Message.Severity = InfoBarSeverity.Error;
         Message.Message  = text;
         Message.IsOpen   = true;
+        // The message is at the top of the page; bring it into view for actions further down
+        PageScroll.ChangeView(null, 0, null);
     }
 
     // =========================================================================
@@ -1094,26 +1189,35 @@ public sealed partial class MainWindow : Window
 
     private async void OnAddListClicked(object sender, RoutedEventArgs e)
     {
-        var name  = new TextBox { Header = "Name", PlaceholderText = "My list" };
-        var url   = new TextBox { Header = "Web address", PlaceholderText = "https://example.com/list.txt" };
-        var panel = new StackPanel { Spacing = 12, MinWidth = 400 };
-        panel.Children.Add(name);
-        panel.Children.Add(url);
-
-        var dialog = new ContentDialog
+        // An error here must not close the app (that would stop blocking)
+        try
         {
-            XamlRoot          = Content.XamlRoot,
-            Title             = "Add a filter list",
-            Content           = panel,
-            PrimaryButtonText = "Add",
-            CloseButtonText   = "Cancel",
-            DefaultButton     = ContentDialogButton.Primary,
-        };
+            var name  = new TextBox { Header = "Name", PlaceholderText = "My list" };
+            var url   = new TextBox { Header = "Web address", PlaceholderText = "https://example.com/list.txt" };
+            var panel = new StackPanel { Spacing = 12, MinWidth = 400 };
+            panel.Children.Add(name);
+            panel.Children.Add(url);
 
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            var dialog = new ContentDialog
+            {
+                XamlRoot          = Content.XamlRoot,
+                Title             = "Add a filter list",
+                Content           = panel,
+                PrimaryButtonText = "Add",
+                CloseButtonText   = "Cancel",
+                DefaultButton     = ContentDialogButton.Primary,
+            };
+
+            if (await ShowDialogAsync(dialog) == ContentDialogResult.Primary)
+            {
+                Expanded.Add("custom");
+                await BusyAsync(AddListButton, AddListRing, () => _app.RunAsync("add_list", new JsonObject { ["name"] = name.Text, ["url"] = url.Text }, lists: true));
+            }
+        }
+        catch (Exception ex)
         {
-            Expanded.Add("custom");
-            await BusyAsync(AddListButton, AddListRing, () => _app.RunAsync("add_list", new JsonObject { ["name"] = name.Text, ["url"] = url.Text }, lists: true));
+            App.LogError(ex);
+            ShowError(ex.Message);
         }
     }
 
@@ -1158,7 +1262,7 @@ public sealed partial class MainWindow : Window
         // Only one dialog can be open at a time
         try
         {
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
             {
                 return;
             }

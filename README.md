@@ -57,7 +57,7 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 - **Web pages can't reach your PC or home network through it.** A public site name that points at a local address (a trick called DNS rebinding) is refused, for web requests, secure tunnels on other ports, and WebSockets alike, so a page can't read your router, NAS, or local apps through the proxy. Names that are local to begin with (`nas.local`, `192.168.1.1`) and excluded sites work as usual.
 - **No other certificate goes through its admin prompt.** Before any admin step, Coffee Filter checks that `ca.cer` is a Coffee Filter certificate with today's limits, so a program that swaps in some other CA, or a copy of a real root, can't get it trusted or removed through the prompt you expect. (A program already running as you could make a look-alike, but it could also read the real key; see the trust boundary below.)
 - **Injected code stays in its tag.** Anything in a filter rule or userscript that could end Coffee Filter's `<script>` early (`</script` in any letter case, `<!--`) is neutralized, so a list can't add code to pages beyond its scriptlets.
-- **Web pages can't raise an admin prompt.** When an Install or Exclude button on a web page opens the app, it skips the automatic certificate setup, and the Add or Exclude button stays off for a second so a stray keystroke can't accept it. A site name from an Exclude link must look like a site name before it's shown.
+- **Web pages can't raise an admin prompt.** When an Install or Exclude button on a web page opens the app (to start it, not when it's already running), it skips the automatic certificate setup, and the Add or Exclude button stays off for a second so a stray keystroke can't accept it. A site name from an Exclude link must look like a site name before it's shown.
 - **No control port.** The app talks to the core over a private pipe (stdin/stdout).
 - **Real certificates are still checked.** The proxy verifies every site with Windows' own certificate check, exactly like your browser would (work or custom roots included). Sites with bad certificates fail instead of being silently trusted.
 - **Excluded apps are never decrypted or filtered.** Add a program (`.exe`) or an installed Microsoft Store app under **Exclusions**, and every connection it makes passes through untouched. Coffee Filter asks Windows which program owns each new connection (only while the list isn't empty), and matches Store apps by package family name, so an exclusion survives app updates.
@@ -119,7 +119,8 @@ cd ../tests/CoffeeFilter.Tests
 dotnet test
 
 # The whole window through Windows UI Automation, against the installed app.
-# Opens pages, groups, and dialogs (always cancelled); changes no settings.
+# Opens pages, groups, and dialogs (always canceled); changes no settings. Launching it turns
+# blocking on if it was on last time, and the Store app list test needs a few Store apps installed.
 cd ../CoffeeFilter.UITests
 dotnet test
 ```
@@ -150,6 +151,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 ## Layout
 
 - `core/` — Rust proxy (`coffee-filter-core.exe`)
+    - `build.rs` — puts the coffee icon into `coffee-filter-core.exe`
     - `main.rs` — JSON-lines command loop, start/stop, shutdown handling
     - `ca.rs` — CA generation, DPAPI key storage, trust store install and renewal, site certificates
     - `filter.rs` — filter lists, adblock engine, request handler
@@ -158,7 +160,6 @@ That's it! Closing the window keeps blocking running in the background, with a t
     - `userscripts.rs`, `userscripts.js` — userscript downloads, `@match` rules, and the in-page `GM_*` helpers
     - `apps.rs` — excluded apps: which program owns a connection
     - `blocked.html` — the blocked page
-- `core/build.rs` — puts the coffee icon into `coffee-filter-core.exe`
     - `problems.rs` — tracks connections Coffee Filter broke
     - `sysproxy.rs` — PAC script and Windows proxy settings with backup and restore
     - `config.rs` — settings and atomic file writes

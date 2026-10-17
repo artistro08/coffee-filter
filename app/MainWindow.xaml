@@ -57,7 +57,7 @@
                         <toolkit:SettingsCard.HeaderIcon>
                             <FontIcon Glyph="&#xEA18;" />
                         </toolkit:SettingsCard.HeaderIcon>
-                        <ToggleSwitch x:Name="BlockingSwitch" AutomationProperties.Name="Ad blocking" Toggled="OnBlockingToggled" />
+                        <ToggleSwitch x:Name="BlockingSwitch" AutomationProperties.Name="Turn ad blocking on or off" Toggled="OnBlockingToggled" />
                     </local:ClickCard>
                     <toolkit:SettingsCard x:Name="CertCard" Header="Certificate">
                         <toolkit:SettingsCard.HeaderIcon>
@@ -153,7 +153,7 @@
                     </toolkit:SettingsExpander>
                     <!-- /Exclusions -->
 
-<!-- App -->
+                    <!-- App -->
                     <TextBlock Text="App" Style="{StaticResource SectionHeader}" />
                     <toolkit:SettingsCard Header="Show tray icon"
                                           Description="When the tray icon is hidden, open the app from the start menu to bring it back.">

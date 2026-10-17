@@ -201,9 +201,9 @@ public sealed class CoreClient : IDisposable
                 _process.Kill();
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
         {
-            // Already exited
+            // Already exited (its pipe may be closed too)
         }
         _process.Dispose();
     }

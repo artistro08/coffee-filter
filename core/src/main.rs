@@ -538,6 +538,11 @@ mod tests {
             serde_json::from_str(r#"{"cmd":"set_userscript","name":"a","enabled":false}"#),
             Ok(Command::SetUserscript { .. })
         ));
+        // The app sends both fields, the unused one as null, with the tag last
+        assert!(matches!(
+            serde_json::from_str(r#"{"name":"Store","path":null,"package":"Microsoft.WindowsStore_8wekyb3d8bbwe","cmd":"add_excluded_app"}"#),
+            Ok(Command::AddExcludedApp { path: None, package: Some(p), .. }) if p == "Microsoft.WindowsStore_8wekyb3d8bbwe"
+        ));
         assert!(serde_json::from_str::<Command>(r#"{"cmd":"rm -rf"}"#).is_err());
     }
 

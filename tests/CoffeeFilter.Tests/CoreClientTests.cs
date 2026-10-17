@@ -140,11 +140,13 @@ public sealed class CoreClientTests : IDisposable
     {
         await _core.WaitReadyAsync();
 
-        var program = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Tool", ["path"] = @"C:\Tools\tool.exe" });
+        // Sent exactly as the app sends them: both fields, the unused one null
+        var program = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Tool", ["path"] = @"C:\Tools\tool.exe", ["package"] = null });
         Assert.True(program.Ok, program.Error);
-        var store = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Store", ["package"] = "Microsoft.WindowsStore_8wekyb3d8bbwe" });
+        var store = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Store", ["path"] = null, ["package"] = "Microsoft.WindowsStore_8wekyb3d8bbwe" });
         Assert.True(store.Ok, store.Error);
         Assert.Equal(["Store", "Tool"], store.Status!.ExcludedApps.Select(a => a.Name));
+        Assert.Equal(["Microsoft.WindowsStore_8wekyb3d8bbwe", @"C:\Tools\tool.exe"], store.Status.ExcludedApps.Select(a => a.Id));
 
         var bad = await _core.SendAsync("add_excluded_app", new JsonObject { ["name"] = "Notes", ["path"] = @"C:\notes.txt" });
         Assert.False(bad.Ok);

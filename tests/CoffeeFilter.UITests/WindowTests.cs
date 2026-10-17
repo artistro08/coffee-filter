@@ -6,7 +6,7 @@ namespace CoffeeFilter.UITests;
 
 /// <summary>
 /// Walks through the whole window the way a person would: every section, both sub-pages,
-/// every group, and the Add app dialogs (always cancelled).
+/// every group, and the Add app dialogs (always canceled).
 /// </summary>
 [Collection("App")]
 public sealed class WindowTests(AppFixture app)
@@ -35,7 +35,8 @@ public sealed class WindowTests(AppFixture app)
         app.GoHome();
 
         // Asking for a tiny size leaves the window at its minimum width
-        app.Window.Patterns.Transform.Pattern.Resize(100, app.Window.BoundingRectangle.Height);
+        var before = app.Window.BoundingRectangle;
+        app.Window.Patterns.Transform.Pattern.Resize(100, before.Height);
         Thread.Sleep(800);
         try
         {
@@ -56,7 +57,7 @@ public sealed class WindowTests(AppFixture app)
         }
         finally
         {
-            app.Window.Patterns.Transform.Pattern.Resize(800, 1100);
+            app.Window.Patterns.Transform.Pattern.Resize(before.Width, before.Height);
         }
     }
 
@@ -64,7 +65,7 @@ public sealed class WindowTests(AppFixture app)
     public void EveryButtonAndSwitchHasASpokenName()
     {
         app.GoHome();
-        app.Expand("Ads");
+        app.Expand("General");
         app.Expand("Excluded apps");
 
         var controls = app.Window.FindAllDescendants(c => c.ByControlType(ControlType.Button))
@@ -116,7 +117,7 @@ public sealed class WindowTests(AppFixture app)
     public void FilterListGroupsShowTheirLists()
     {
         app.GoHome();
-        var group = app.Expand("Ads");
+        var group = app.Expand("General");
         var lists = Retry.WhileEmpty(() => group.FindAllDescendants(c => c.ByControlType(ControlType.Button).And(c.ByClassName("ToggleSwitch"))), TimeSpan.FromSeconds(5)).Result ?? [];
         Assert.NotEmpty(lists);
     }
@@ -137,9 +138,17 @@ public sealed class WindowTests(AppFixture app)
         app.GoHome();
         var group = app.Expand("Excluded apps");
         var any   = Retry.WhileNull(
-            () => group.FindFirstDescendant(c => c.ByName("No excluded apps")) ?? group.FindFirstDescendant(c => c.ByName("Delete").And(c.ByControlType(ControlType.Button))),
+            () => group.FindFirstDescendant(c => c.ByName("No excluded apps"))
+                ?? group.FindAllDescendants(c => c.ByControlType(ControlType.Button)).FirstOrDefault(b => b.Properties.Name.ValueOrDefault?.StartsWith("Delete ") == true),
             TimeSpan.FromSeconds(5)).Result;
         Assert.NotNull(any);
+
+        // Excluded apps show their real icons (a Store app's logo, a program's file icon), not just a symbol
+        if (any.Properties.Name.ValueOrDefault?.StartsWith("Delete ") == true)
+        {
+            var icon = Retry.WhileNull(() => group.FindFirstDescendant(c => c.ByControlType(ControlType.Image)), TimeSpan.FromSeconds(5)).Result;
+            Assert.True(icon is { BoundingRectangle.Width: > 0 }, "no excluded app shows its icon");
+        }
     }
 
     [Fact]
@@ -189,7 +198,7 @@ public sealed class WindowTests(AppFixture app)
             Assert.DoesNotContain("App Resolver", names);
             Assert.DoesNotContain("AsyncTextService", names);
 
-            // Choosing an app turns on Exclude (cancelled below, so nothing is saved)
+            // Choosing an app turns on Exclude (canceled below, so nothing is saved)
             items[0].Patterns.SelectionItem.Pattern.Select();
             var exclude = Retry.WhileNull(() => FindAnywhere("Exclude"), TimeSpan.FromSeconds(5)).Result;
             Assert.True(Retry.WhileFalse(() => exclude?.IsEnabled == true, TimeSpan.FromSeconds(5)).Success, "Exclude stays off after choosing an app");

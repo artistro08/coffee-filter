@@ -6,7 +6,7 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
         <RootNamespace>CoffeeFilter</RootNamespace>
-        <Version>0.1.0.26</Version>
+        <Version>0.1.0.28</Version>
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <Platforms>x64</Platforms>
         <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -41,6 +41,12 @@
         <AppxPackageDir>$(MSBuildThisFileDirectory)AppPackages\</AppxPackageDir>
         <GenerateTestArtifacts>false</GenerateTestArtifacts>
     </PropertyGroup>
+
+    <!-- Icon Source Art (kept in the repo, not shipped) -->
+    <ItemGroup>
+        <Content Remove="Assets\source\**" />
+        <None Remove="Assets\source\**" />
+    </ItemGroup>
 
     <!-- Packages -->
     <ItemGroup>

@@ -118,9 +118,9 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Forgotten after this long, in case Windows reuses the port for another program. Each new
-    /// connection is looked up when it starts anyway; this only spares the requests that follow.
-    const KEEP: Duration = Duration::from_secs(5);
+    /// Forgotten after this long. A live connection's program can't change; this only covers
+    /// Windows handing the port to another program later, which waits out TIME_WAIT (minutes).
+    const KEEP: Duration = Duration::from_secs(60);
 
     pub fn get(&self, client: SocketAddr) -> Option<bool> {
         self.seen.lock().unwrap().get(&client).filter(|(at, _)| at.elapsed() < Self::KEEP).map(|(_, excluded)| *excluded)

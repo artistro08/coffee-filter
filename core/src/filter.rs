@@ -237,6 +237,7 @@ fn engine_key(config: &Config) -> String {
         .join("\n")
         // Bump when the way lists are compiled changes, so old engine.dat files are rebuilt
         + "\nformat:4"
+        + "\nbuiltin:" + &sha1_smol::Sha1::from(BUILTIN_RULES).digest().to_string()
 }
 
 fn load_cached_engine(key: &str) -> Option<(Engine, usize)> {
@@ -383,6 +384,16 @@ fn page_url(uri: &hudsucker::hyper::Uri) -> String {
     }
 }
 
+/// What a public site name was found to point at (see `Blocker::resolve_public`).
+enum Resolved {
+    /// Only local addresses: refused.
+    Local,
+    /// A public address, the one to connect to.
+    Public(SocketAddr),
+    /// Local or excluded names, and lookups that failed: left as they are.
+    Unchecked,
+}
+
 fn local_refused() -> RequestOrResponse {
     Response::builder()
         .status(StatusCode::FORBIDDEN)
@@ -519,19 +530,24 @@ impl Blocker {
         Self { shared, page: None, install: None }
     }
 
-    /// A public site name (not excluded) whose every address is on this PC or the home network.
-    /// One OS lookup, usually from its cache; failures are left to the real connection.
-    async fn points_local(&self, host: &str, port: u16) -> bool {
+    /// Where a public site name (not excluded) points. One OS lookup, usually from its cache.
+    async fn resolve_public(&self, host: &str, port: u16) -> Resolved {
         if is_private_host(host) || is_excluded(&self.shared.exclusions.read().unwrap(), host) {
-            return false;
+            return Resolved::Unchecked;
         }
-        match tokio::net::lookup_host((host, port)).await {
-            Ok(addrs) => {
-                let addrs: Vec<SocketAddr> = addrs.collect();
-                !addrs.is_empty() && addrs.iter().all(|a| is_private_ip(a.ip()))
-            }
-            Err(_) => false,
+        let Ok(addrs) = tokio::net::lookup_host((host, port)).await else { return Resolved::Unchecked };
+        let addrs: Vec<SocketAddr> = addrs.collect();
+        match addrs.iter().find(|a| !is_private_ip(a.ip())) {
+            Some(addr) => Resolved::Public(*addr),
+            // Failures are left to the real connection
+            None if addrs.is_empty() => Resolved::Unchecked,
+            None => Resolved::Local,
         }
+    }
+
+    /// A public site name (not excluded) whose every address is on this PC or the home network.
+    async fn points_local(&self, host: &str, port: u16) -> bool {
+        matches!(self.resolve_public(host, port).await, Resolved::Local)
     }
 
     /// Does this connection come from an app you excluded? Free when none are excluded.
@@ -559,12 +575,22 @@ impl HttpHandler for Blocker {
         self.install = None;
         if req.method() == Method::CONNECT {
             // Tunnels that won't be decrypted connect on their own, past our DNS check
-            // (PublicOnly), so check here that a public name doesn't point at a local address
-            if let Some(host) = req.uri().host()
+            // (PublicOnly). Check here that a public name doesn't point at a local address, then
+            // connect to the address that was checked: looking the name up again could give a
+            // different, local one (a name can change what it points to between lookups).
+            if let Some(host) = req.uri().host().map(str::to_string)
                 && req.uri().port_u16() != Some(443)
-                && self.points_local(host, req.uri().port_u16().unwrap_or(443)).await
             {
-                return local_refused();
+                let port = req.uri().port_u16().unwrap_or(443);
+                match self.resolve_public(&host, port).await {
+                    Resolved::Local => return local_refused(),
+                    Resolved::Public(addr) => {
+                        if let Ok(uri) = addr.to_string().parse() {
+                            *req.uri_mut() = uri;
+                        }
+                    }
+                    Resolved::Unchecked => {}
+                }
             }
             return req.into();
         }
