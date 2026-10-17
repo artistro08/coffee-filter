@@ -196,3 +196,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - `%LOCALAPPDATA%\CoffeeFilter\problems.json` — connections Coffee Filter broke, for troubleshooting
 - `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, blocking on or off, certificate setup version)
 - `%LOCALAPPDATA%\CoffeeFilter\app-errors.log` — app errors, if any
+
+## License
+
+MIT. See [LICENSE](LICENSE). Filter lists keep their own authors' licenses; Coffee Filter only downloads them.
