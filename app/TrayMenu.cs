@@ -84,6 +84,7 @@ public sealed partial class TrayMenu
                 return;
             }
             WindowUtilities.HideWindow(_hwnd);
+            App.Instance.SetBackground(true);
         };
         _window.Activated += (_, e) =>
         {
@@ -140,6 +141,7 @@ public sealed partial class TrayMenu
 
     private void ShowNow()
     {
+        App.Instance.SetBackground(false);
         _shownAt = Environment.TickCount64;
         Place();
         // Activate (not just ShowWindow): WinUI only loads a window's content once it's activated

@@ -312,7 +312,7 @@ pub fn install() -> io::Result<bool> {
     is_installed()
 }
 
-/// Versions before 0.2 installed into the user's own Root store. Checked in the registry
+/// Early builds installed into the user's own Root store. Checked in the registry
 /// (that store's backing key), because asking CryptoAPI would also see machine roots.
 fn in_user_store() -> io::Result<bool> {
     let thumb = thumbprint_hex()?.to_uppercase();

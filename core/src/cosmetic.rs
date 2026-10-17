@@ -25,7 +25,7 @@ use hudsucker::{
     hyper::{
         Response, StatusCode,
         body::Bytes,
-        header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderValue},
+        header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY_REPORT_ONLY, CONTENT_TYPE, HeaderValue},
     },
 };
 use http_body_util::BodyDataStream;
@@ -275,16 +275,20 @@ pub fn inject(res: Response<Body>, engine: &Engine, userscripts: &[&str], url: &
     };
     let (mut parts, body) = res.into_parts();
 
-    // A policy we can't read or rewrite is kept exactly as sent; dropping it would remove the site's protection
-    let policies: Vec<HeaderValue> = parts
-        .headers
-        .get_all(CONTENT_SECURITY_POLICY)
-        .iter()
-        .map(|v| v.to_str().ok().and_then(|s| HeaderValue::from_str(&allow_nonce(s, &nonce)).ok()).unwrap_or_else(|| v.clone()))
-        .collect();
-    parts.headers.remove(CONTENT_SECURITY_POLICY);
-    for policy in policies {
-        parts.headers.append(CONTENT_SECURITY_POLICY, policy);
+    // A policy we can't read or rewrite is kept exactly as sent; dropping it would remove the
+    // site's protection. Report-only policies get the nonce too, so the site isn't sent reports
+    // that name our tags.
+    for name in [CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY_REPORT_ONLY] {
+        let policies: Vec<HeaderValue> = parts
+            .headers
+            .get_all(&name)
+            .iter()
+            .map(|v| v.to_str().ok().and_then(|s| HeaderValue::from_str(&allow_nonce(s, &nonce)).ok()).unwrap_or_else(|| v.clone()))
+            .collect();
+        parts.headers.remove(&name);
+        for policy in policies {
+            parts.headers.append(&name, policy);
+        }
     }
     parts.headers.remove(CONTENT_LENGTH);
 

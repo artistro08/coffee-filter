@@ -92,6 +92,11 @@ impl Log {
         g.1.iter().filter(|e| e.id > after).cloned().collect()
     }
 
+    /// Forget what's recorded but keep recording (memory is low).
+    pub fn trim(&self) {
+        self.entries.lock().unwrap().1.clear();
+    }
+
     /// Start recording, or stop and forget everything recorded.
     pub fn set(&self, on: bool) {
         self.on.store(on, Ordering::Relaxed);
@@ -136,6 +141,16 @@ pub async fn fetch(client: &reqwest::Client, url: &str, max: usize) -> Result<Ve
 pub fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .no_proxy()
+        // https all the way: a redirect to plain http could let lists or scripts be swapped on the way
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.url().scheme() != "https" {
+                attempt.error("redirected to a plain http address")
+            } else if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        }))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()
@@ -175,18 +190,18 @@ pub async fn download_lists(config: &Config) -> Vec<String> {
 
 /// Build an engine from cached lists, downloading any that are missing. Compiling is
 /// CPU-heavy, so it runs off the proxy's worker threads.
-pub async fn build_engine(config: &Config) -> (Engine, usize) {
+/// Returns the engine, its rule count, and the downloads that failed (shown in the app).
+pub async fn build_engine(config: &Config) -> (Engine, usize, Vec<String>) {
     let library = data_dir().map(|d| d.join("scriptlets.json"));
     let missing = config.lists.iter().any(|l| l.enabled && !cache_path(l).is_ok_and(|p| p.exists()))
         || !library.as_ref().is_ok_and(|p| p.exists());
-    if missing {
-        download_lists(config).await;
-    }
+    let errors = if missing { download_lists(config).await } else { vec![] };
 
     let config = config.clone();
-    tokio::task::spawn_blocking(move || compile(&config, library.ok()))
+    let (engine, rules) = tokio::task::spawn_blocking(move || compile(&config, library.ok()))
         .await
-        .unwrap_or_else(|_| (Engine::default(), 0))
+        .unwrap_or_else(|_| (Engine::default(), 0));
+    (engine, rules, errors)
 }
 
 fn compile(config: &Config, library: Option<PathBuf>) -> (Engine, usize) {
@@ -195,16 +210,19 @@ fn compile(config: &Config, library: Option<PathBuf>) -> (Engine, usize) {
     let (mut engine, rules) = match load_cached_engine(&key) {
         Some(cached) => cached,
         None => {
-            let mut set   = FilterSet::new(false);
-            let mut rules = 0;
-            for list in config.lists.iter().filter(|l| l.enabled) {
-                if let Ok(text) = cache_path(list).and_then(fs::read_to_string) {
-                    rules += text.lines().filter(|l| is_rule(l)).count();
-                    add_list(&mut set, text, list.trusted);
+            // Parsing ~1M rules is heavy and can wait, so it gives way to everything else on the PC
+            let (engine, rules) = crate::pressure::below_normal(|| {
+                let mut set   = FilterSet::new(false);
+                let mut rules = 0;
+                for list in config.lists.iter().filter(|l| l.enabled) {
+                    if let Ok(text) = cache_path(list).and_then(fs::read_to_string) {
+                        rules += text.lines().filter(|l| is_rule(l)).count();
+                        add_list(&mut set, text, list.trusted);
+                    }
                 }
-            }
-            add_list(&mut set, BUILTIN_RULES.to_string(), false);
-            let engine = Engine::new_with_filter_set(set);
+                add_list(&mut set, BUILTIN_RULES.to_string(), false);
+                (Engine::new_with_filter_set(set), rules)
+            });
 
             if let Ok(dir) = data_dir() {
                 let _ = write_atomic(&dir.join("engine.dat"), &engine.serialize());
@@ -363,7 +381,8 @@ fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
-            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || (a == 100 && (64..128).contains(&b))
+            // 0.0.0.0/8 and 100.64.0.0/10 (Tailscale, carrier NAT) too, like the PAC script
+            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_broadcast() || v4.is_multicast() || a == 0 || (a == 100 && (64..128).contains(&b))
         }
         IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local(),
     }
@@ -580,6 +599,7 @@ impl HttpHandler for Blocker {
             // different, local one (a name can change what it points to between lookups).
             if let Some(host) = req.uri().host().map(str::to_string)
                 && req.uri().port_u16() != Some(443)
+                && !self.is_excluded_app(ctx).await
             {
                 let port = req.uri().port_u16().unwrap_or(443);
                 match self.resolve_public(&host, port).await {
@@ -789,7 +809,7 @@ mod tests {
 
     #[test]
     fn home_network_hosts_are_never_decrypted() {
-        for host in ["192.168.86.28", "10.0.0.5", "172.20.1.1", "169.254.1.1", "127.0.0.1", "[::1]", "[fd00::1]", "[::ffff:127.0.0.1]", "100.100.1.2", "0.0.0.0", "nas.local", "router", "dock.lan", "app.localhost"] {
+        for host in ["192.168.1.10", "10.0.0.5", "172.20.1.1", "169.254.1.1", "127.0.0.1", "[::1]", "[fd00::1]", "[::ffff:127.0.0.1]", "100.100.1.2", "0.0.0.0", "nas.local", "router", "dock.lan", "app.localhost"] {
             assert!(is_private_host(host), "{host}");
         }
         for host in ["reddit.com", "8.8.8.8", "172.32.0.1", "100.128.0.1", "[2606:4700::1]", "[::ffff:8.8.8.8]"] {

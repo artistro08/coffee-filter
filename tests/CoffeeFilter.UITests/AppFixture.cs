@@ -9,8 +9,9 @@ namespace CoffeeFilter.UITests;
 
 /// <summary>
 /// Opens the installed Coffee Filter app (or uses the running one) and hands its main window
-/// to the tests. The tests only look, open pages and groups, and cancel dialogs: they never
-/// change settings. The window goes back to its original size afterward.
+/// to the tests. The tests look, open pages and groups, and cancel dialogs. One test excludes
+/// a Store app you haven't excluded and deletes it again, so your settings end as they began.
+/// The window goes back to its original size afterward.
 /// </summary>
 public sealed class AppFixture : IDisposable
 {

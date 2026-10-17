@@ -175,6 +175,13 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Give a settings group a new set of rows. Editing the group's existing list in place
+    /// (Clear, Add) doesn't redraw a group that's already on screen, so added or deleted rows
+    /// didn't appear until the window was reopened; assigning a new list does redraw it.
+    /// </summary>
+    private static void ReplaceItems(SettingsExpander group, List<object> items) => group.Items = items;
+
     private SettingsCard Row(SettingsCard card)
     {
         OneRow(card);
@@ -258,7 +265,9 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private const float BackButtonWidth = 40;
 
-    private static bool AnimationsOn => new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+    private static readonly Windows.UI.ViewManagement.UISettings UiSettings = new();
+
+    private static bool AnimationsOn => UiSettings.AnimationsEnabled;
 
     /// <summary>
     /// Windows' standard decelerate curve: fast start, gentle stop.
@@ -439,6 +448,15 @@ public sealed partial class MainWindow : Window
         }
         _logAfter = entries[^1].Id;
 
+        // A burst (opening the page, or after a reconnect) skips the slide-in animation, so the
+        // GPU doesn't run dozens of them at once; trickling entries keep it
+        var transitions = LogEntries.ChildrenTransitions;
+        var burst       = entries.Count > 10;
+        if (burst)
+        {
+            LogEntries.ChildrenTransitions = null;
+        }
+
         // Newest first; keep the page light by dropping the oldest
         foreach (var entry in entries.TakeLast(LogMax))
         {
@@ -456,6 +474,10 @@ public sealed partial class MainWindow : Window
         while (LogEntries.Children.Count > LogMax)
         {
             LogEntries.Children.RemoveAt(LogEntries.Children.Count - 1);
+        }
+        if (burst)
+        {
+            LogEntries.ChildrenTransitions = transitions;
         }
     }
 
@@ -490,17 +512,17 @@ public sealed partial class MainWindow : Window
         }
         _exclusionsKey = key;
         _exclusions    = exclusions;
-        ExclusionsCard.Items.Clear();
+        var items = new List<object>();
 
         // Bulk Add
         var bulk = new Button { Content = "Bulk add" };
         bulk.Click += OnBulkExclusionsClicked;
-        ExclusionsCard.Items.Add(Row(new SettingsCard { Header = "Add several sites", Description = "Paste one site per line.", Content = bulk }));
+        items.Add(Row(new SettingsCard { Header = "Add several sites", Description = "Paste one site per line.", Content = bulk }));
 
         // Empty State
         if (exclusions.Count == 0)
         {
-            ExclusionsCard.Items.Add(Row(new SettingsCard { Header = "No excluded sites" }));
+            items.Add(Row(new SettingsCard { Header = "No excluded sites" }));
         }
 
         foreach (var site in exclusions)
@@ -508,8 +530,9 @@ public sealed partial class MainWindow : Window
             var delete = new Button { Content = "Delete" };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(delete, $"Delete {site}");
             delete.Click += async (_, _) => await SaveExclusionsAsync(_exclusions.Where(h => h != site));
-            ExclusionsCard.Items.Add(Row(new SettingsCard { Header = site, Content = delete }));
+            items.Add(Row(new SettingsCard { Header = site, Content = delete }));
         }
+        ReplaceItems(ExclusionsCard, items);
     }
 
     private async Task SaveExclusionsAsync(IEnumerable<string> hosts)
@@ -590,6 +613,7 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             App.LogError(ex);
+            ShowError(ex.Message);
             return;
         }
 
@@ -649,12 +673,13 @@ public sealed partial class MainWindow : Window
             return;
         }
         _appsKey = key;
-        ExcludedAppsCard.Items.Clear();
+        var items = new List<object>();
 
         // Empty State
         if (apps.Count == 0)
         {
-            ExcludedAppsCard.Items.Add(Row(new SettingsCard { Header = "No excluded apps" }));
+            items.Add(Row(new SettingsCard { Header = "No excluded apps" }));
+            ReplaceItems(ExcludedAppsCard, items);
             return;
         }
 
@@ -670,15 +695,16 @@ public sealed partial class MainWindow : Window
                 HeaderIcon  = new FontIcon { Glyph = app.Package is null ? "\uE7AC" : "\uE719" },
                 Content     = delete,
             };
-            ExcludedAppsCard.Items.Add(Row(card));
+            items.Add(Row(card));
             _ = ShowAppIconAsync(card, app);
         }
+        ReplaceItems(ExcludedAppsCard, items);
     }
 
     /// <summary>
     /// Swap a row's placeholder symbol for the app's real icon: a Store app's package logo, or
-    /// the icon Windows shows for a program file. Looked up off the UI thread; a missing app or
-    /// icon just keeps the symbol.
+    /// the icon Windows shows for a program file. Both lookups are asynchronous, so the window
+    /// doesn't wait on them; a missing app or icon just keeps the symbol.
     /// </summary>
     private static async Task ShowAppIconAsync(SettingsCard card, ExcludedApp app)
     {
@@ -693,7 +719,7 @@ public sealed partial class MainWindow : Window
                     icon = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(logo) { DecodePixelWidth = 40 };
                 }
             }
-            else if (app.Path is { } path && File.Exists(path))
+            else if (app.Path is { } path)
             {
                 var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
                 using var thumbnail = await file.GetThumbnailAsync(Windows.Storage.FileProperties.ThumbnailMode.SingleItem, 40);
@@ -709,9 +735,13 @@ public sealed partial class MainWindow : Window
                 card.HeaderIcon = new ImageIcon { Source = icon, Width = 20, Height = 20 };
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
+        catch (Exception ex)
         {
-            // Uninstalled or unreadable: the placeholder symbol stays
+            // Uninstalled, unreadable, or an odd image: the placeholder symbol stays
+            if (ex is not (IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException))
+            {
+                App.LogError(ex);
+            }
         }
     }
 
@@ -764,6 +794,7 @@ public sealed partial class MainWindow : Window
     private async void OnAddStoreAppClicked(object sender, RoutedEventArgs e)
     {
         var search  = new TextBox { PlaceholderText = "Search apps", IsEnabled = false };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(search, "Search apps");
         var loading = new ProgressRing { IsActive = true, Width = 32, Height = 32, Margin = new Thickness(0, 48, 0, 48) };
         var message = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 24, 0, 24) };
         var list    = new ListView
@@ -858,6 +889,7 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             App.LogError(ex);
+            ShowError(ex.Message);
         }
     }
 
@@ -1020,7 +1052,8 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// Open a dialog. Only one can be open at a time, and one that was just closed still counts
-    /// while it animates away, so a quick second dialog would fail; this waits it out.
+    /// while it animates away, so a quick second dialog would fail; this waits it out for up to
+    /// two seconds, then passes the error on.
     /// </summary>
     private static async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
     {
@@ -1087,10 +1120,7 @@ public sealed partial class MainWindow : Window
                 {
                     return;
                 }
-                foreach (var list in members)
-                {
-                    expander.Items.Add(ListCard(list.Name, list.Url, list.Enabled, kind == "custom", "set_list", "remove_list"));
-                }
+                ReplaceItems(expander, [.. members.Select(list => (object)ListCard(list.Name, list.Url, list.Enabled, kind == "custom", "set_list", "remove_list"))]);
             }
             expander.Expanded  += (_, _) => { Expanded.Add(kind); Fill(); };
             expander.Collapsed += (_, _) => Expanded.Remove(kind);
@@ -1140,12 +1170,13 @@ public sealed partial class MainWindow : Window
             return;
         }
         _scriptsKey = key;
-        UserscriptsCard.Items.Clear();
+        var items = new List<object>();
 
         foreach (var script in scripts)
         {
-            UserscriptsCard.Items.Add(ListCard(script.Name, script.Url, script.Enabled, true, "set_userscript", "remove_userscript"));
+            items.Add(ListCard(script.Name, script.Url, script.Enabled, true, "set_userscript", "remove_userscript"));
         }
+        ReplaceItems(UserscriptsCard, items);
     }
 
     // =========================================================================
@@ -1270,6 +1301,7 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             App.LogError(ex);
+            ShowError(ex.Message);
             return;
         }
         await BusyAsync(AddScriptButton, AddScriptRing, () => _app.RunAsync("add_userscript", new JsonObject { ["url"] = url.Text }, lists: true));

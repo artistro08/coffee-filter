@@ -14,6 +14,8 @@ tests/*/obj/
 *.key
 *.dpapi
 *.pfx
+*.p12
+*.snk
 *.msix
 
 # Tooling and test output
@@ -22,3 +24,4 @@ tests/*/obj/
 TestResults/
 .idea/
 *.profraw
+launchSettings.json

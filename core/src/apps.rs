@@ -118,9 +118,10 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Forgotten after this long. A live connection's program can't change; this only covers
-    /// Windows handing the port to another program later, which waits out TIME_WAIT (minutes).
-    const KEEP: Duration = Duration::from_secs(60);
+    /// Forgotten after this long. A live connection's program can't change, but when the proxy
+    /// closes a connection first, Windows can hand that port to another program soon after,
+    /// so the answer is only kept briefly.
+    const KEEP: Duration = Duration::from_secs(10);
 
     pub fn get(&self, client: SocketAddr) -> Option<bool> {
         self.seen.lock().unwrap().get(&client).filter(|(at, _)| at.elapsed() < Self::KEEP).map(|(_, excluded)| *excluded)

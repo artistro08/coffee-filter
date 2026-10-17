@@ -10,6 +10,7 @@ mod ca;
 mod config;
 mod cosmetic;
 mod filter;
+mod pressure;
 mod problems;
 mod sysproxy;
 mod userscripts;
@@ -90,7 +91,8 @@ struct App {
 /// Lowercase, strip `*.` and dots, and reject anything that isn't a plain hostname.
 fn normalize_host(host: &str) -> Option<String> {
     let host  = host.trim().trim_start_matches("*.").trim_matches('.').to_ascii_lowercase();
-    let valid = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    // A dot is required: "com" alone would exclude every .com site
+    let valid = host.contains('.') && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     valid.then_some(host)
 }
 
@@ -159,12 +161,14 @@ impl App {
         self.cert_renewal   = if self.cert_installed { ca::renewal_reason() } else { None };
     }
 
-    async fn rebuild(&mut self) {
-        let (engine, rules) = filter::build_engine(&self.config).await;
+    /// Rebuild the engine; returns downloads that failed along the way.
+    async fn rebuild(&mut self) -> Vec<String> {
+        let (engine, rules, errors) = filter::build_engine(&self.config).await;
         // Swap under the lock, free the old engine after releasing it
         let old = std::mem::replace(&mut *self.shared.engine.write().unwrap(), Arc::new(engine));
         drop(old);
         self.rules = rules;
+        errors
     }
 
     /// Save the excluded apps and use them from the next connection on.
@@ -174,9 +178,11 @@ impl App {
         self.config.save().map_err(|e| e.to_string())
     }
 
-    async fn reload_userscripts(&mut self) {
-        let scripts = userscripts::load(&self.config).await;
+    /// Reload the enabled userscripts; returns downloads that failed along the way.
+    async fn reload_userscripts(&mut self) -> Vec<String> {
+        let (scripts, errors) = userscripts::load(&self.config).await;
         *self.shared.userscripts.write().unwrap() = Arc::new(scripts);
+        errors
     }
 
     async fn start(&mut self) -> Result<(), String> {
@@ -212,11 +218,22 @@ impl App {
             .enable_http2()
             .wrap_connector(http);
 
+        // Idle connections to sites are reused for a short while, 8 per site at most (browsers
+        // open 6 at once to HTTP/1.1 sites), so
+        // they can't pile up and hold memory (hudsucker's header defaults kept)
+        let mut client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
+        client
+            .http1_title_case_headers(true)
+            .http1_preserve_header_case(true)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(8);
+
         let proxy = Proxy::builder()
             .with_listener(listener)
             .with_ca(ca)
             .with_http_connector(https)
             .with_websocket_connector(Connector::Rustls(Arc::new(tls)))
+            .with_client(client)
             .with_http_handler(Blocker::new(self.shared.clone()))
             .with_graceful_shutdown(async {
                 let _ = rx.await;
@@ -289,8 +306,8 @@ impl App {
             Command::UpdateLists => {
                 let (mut errors, script_errors) = tokio::join!(filter::download_lists(&self.config), userscripts::download_all(&self.config.userscripts));
                 errors.extend(script_errors);
-                self.rebuild().await;
-                self.reload_userscripts().await;
+                errors.extend(self.rebuild().await);
+                errors.extend(self.reload_userscripts().await);
                 if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
             Command::SetExclusions { hosts } => {
@@ -342,22 +359,22 @@ impl App {
                 let list = self.config.lists.iter_mut().find(|l| l.name == name).ok_or("Unknown list.")?;
                 list.enabled = enabled;
                 self.config.save().map_err(|e| e.to_string())?;
-                self.rebuild().await;
-                Ok(())
+                let errors = self.rebuild().await;
+                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
             Command::AddList { name, url } => {
                 let list = new_list(&self.config.lists, &name, &url)?;
                 self.config.lists.push(list);
                 self.config.save().map_err(|e| e.to_string())?;
                 // Rebuild downloads lists that aren't cached yet
-                self.rebuild().await;
-                Ok(())
+                let errors = self.rebuild().await;
+                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
             Command::RemoveList { name } => {
                 self.config.lists.retain(|l| l.name != name);
                 self.config.save().map_err(|e| e.to_string())?;
-                self.rebuild().await;
-                Ok(())
+                let errors = self.rebuild().await;
+                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
             Command::Log { after } => {
                 self.shared.log.set(true);
@@ -385,15 +402,15 @@ impl App {
                 }
                 self.config.userscripts.push(config::Userscript { name: header.name, url, enabled: true });
                 self.config.save().map_err(|e| e.to_string())?;
-                self.reload_userscripts().await;
-                Ok(())
+                let errors = self.reload_userscripts().await;
+                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
             Command::SetUserscript { name, enabled } => {
                 let script = self.config.userscripts.iter_mut().find(|s| s.name == name).ok_or("Unknown userscript.")?;
                 script.enabled = enabled;
                 self.config.save().map_err(|e| e.to_string())?;
-                self.reload_userscripts().await;
-                Ok(())
+                let errors = self.reload_userscripts().await;
+                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
             Command::RemoveUserscript { name } => {
                 if let Some(script) = self.config.userscripts.iter().find(|s| s.name == name) {
@@ -401,8 +418,8 @@ impl App {
                 }
                 self.config.userscripts.retain(|s| s.name != name);
                 self.config.save().map_err(|e| e.to_string())?;
-                self.reload_userscripts().await;
-                Ok(())
+                let errors = self.reload_userscripts().await;
+                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
             }
         }
     }
@@ -438,6 +455,9 @@ async fn main() {
         return;
     }
 
+    // Every web request waits on this process, so it never runs slowed down
+    pressure::keep_fast();
+
     // Undo a system proxy left behind by a crash before doing anything else
     if let Err(e) = sysproxy::restore() {
         eprintln!("restore failed: {e}");
@@ -452,8 +472,12 @@ async fn main() {
     }
 
     let (config, warning) = Config::load();
-    let (engine, rules)   = filter::build_engine(&config).await;
-    let scripts           = userscripts::load(&config).await;
+    let (engine, rules, list_errors) = filter::build_engine(&config).await;
+    let (scripts, script_errors)     = userscripts::load(&config).await;
+
+    // A damaged settings file or downloads that failed on first run are shown in the app
+    let problems_at_start: Vec<String> = warning.into_iter().chain(list_errors).chain(script_errors).collect();
+    let warning = (!problems_at_start.is_empty()).then(|| problems_at_start.join("\n"));
     let shared = Arc::new(Shared {
         engine:      RwLock::new(Arc::new(engine)),
         pac:         RwLock::new((String::new(), String::new())),
@@ -466,6 +490,7 @@ async fn main() {
         apps:        RwLock::new(Arc::new(config.excluded_apps.clone())),
         app_cache:   Default::default(),
     });
+    pressure::watch_memory(shared.clone());
     let mut app = App { config, shared, problems, rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
     app.refresh_cert();
 
@@ -551,5 +576,6 @@ mod tests {
         assert_eq!(normalize_host(" *.Bank.com. ").as_deref(), Some("bank.com"));
         assert_eq!(normalize_host("bank.com/path"), None);
         assert_eq!(normalize_host(""), None);
+        assert_eq!(normalize_host("com"), None, "a bare top-level name would exclude every site under it");
     }
 }

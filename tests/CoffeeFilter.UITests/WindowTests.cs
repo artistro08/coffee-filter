@@ -6,7 +6,7 @@ namespace CoffeeFilter.UITests;
 
 /// <summary>
 /// Walks through the whole window the way a person would: every section, both sub-pages,
-/// every group, and the Add app dialogs (always canceled).
+/// every group, and the Add app dialogs (canceled, except one test that excludes a Store app and deletes it again).
 /// </summary>
 [Collection("App")]
 public sealed class WindowTests(AppFixture app)
@@ -142,13 +142,6 @@ public sealed class WindowTests(AppFixture app)
                 ?? group.FindAllDescendants(c => c.ByControlType(ControlType.Button)).FirstOrDefault(b => b.Properties.Name.ValueOrDefault?.StartsWith("Delete ") == true),
             TimeSpan.FromSeconds(5)).Result;
         Assert.NotNull(any);
-
-        // Excluded apps show their real icons (a Store app's logo, a program's file icon), not just a symbol
-        if (any.Properties.Name.ValueOrDefault?.StartsWith("Delete ") == true)
-        {
-            var icon = Retry.WhileNull(() => group.FindFirstDescendant(c => c.ByControlType(ControlType.Image)), TimeSpan.FromSeconds(5)).Result;
-            Assert.True(icon is { BoundingRectangle.Width: > 0 }, "no excluded app shows its icon");
-        }
     }
 
     [Fact]
@@ -227,6 +220,81 @@ public sealed class WindowTests(AppFixture app)
         }
     }
 
+    /// <summary>
+    /// The one test that changes settings, and it puts them back: excludes a Store app you
+    /// haven't excluded, checks it's listed, then deletes it (in finally, so even a failure
+    /// undoes it). Your own excluded apps are never picked or touched.
+    /// </summary>
+    [Fact]
+    public void ExcludingAStoreAppListsItAndDeleteRemovesIt()
+    {
+        app.GoHome();
+        app.Expand("Excluded apps");
+
+        // Your own excluded apps, read before the dialog covers the group; these are never picked
+        var mine = app.Window.FindAllDescendants(c => c.ByControlType(ControlType.Button))
+            .Select(b => b.Properties.Name.ValueOrDefault)
+            .Where(n => n?.StartsWith("Delete ") == true)
+            .ToHashSet();
+        string? added = null;
+        try
+        {
+            OpenAddAppMenu();
+            Retry.WhileNull(() => FindAnywhere("Microsoft Store app…"), TimeSpan.FromSeconds(5)).Result!.Patterns.Invoke.Pattern.Invoke();
+            var list  = Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByName("Installed apps")), TimeSpan.FromSeconds(25)).Result!;
+            Retry.WhileTrue(() => list.FindAllChildren(c => c.ByControlType(ControlType.ListItem)).Length < 3, TimeSpan.FromSeconds(25));
+            Thread.Sleep(800);
+
+            // The first app that isn't already one of yours
+            var pick = list.FindAllChildren(c => c.ByControlType(ControlType.ListItem))
+                .FirstOrDefault(i => i.Properties.Name.ValueOrDefault is { Length: > 0 and <= 100 } name && !name.Contains('\n') && !mine.Contains($"Delete {name}"));
+            Assert.NotNull(pick);
+            var name = pick.Properties.Name.ValueOrDefault!;
+
+            pick.Patterns.SelectionItem.Pattern.Select();
+            Assert.True(Retry.WhileFalse(() => FindAnywhere("Exclude")?.IsEnabled == true, TimeSpan.FromSeconds(5)).Success, "Exclude stays off after choosing an app");
+            FindAnywhere("Exclude")!.Patterns.Invoke.Pattern.Invoke();
+            added = name;
+
+            // Listed in the group
+            var delete = Retry.WhileNull(() => DeleteButton(name), TimeSpan.FromSeconds(10)).Result;
+            Assert.True(delete is not null, $"\"{name}\" wasn't added to Excluded apps");
+
+            // With its real icon (the package logo), not just a symbol: an image on the new row itself
+            app.Expand("Excluded apps");
+            var row = Retry.WhileNull(() => DeleteButton(name)?.Parent, TimeSpan.FromSeconds(5)).Result;
+            Assert.True(row is not null, $"no row for \"{name}\"");
+            Assert.True(Retry.WhileFalse(() => row.FindFirstDescendant(c => c.ByControlType(ControlType.Image)) is { BoundingRectangle.Width: > 0 }, TimeSpan.FromSeconds(5)).Success, $"\"{name}\" shows no icon");
+
+            // And Delete takes it out
+            delete.Patterns.Invoke.Pattern.Invoke();
+            Assert.True(Retry.WhileNotNull(() => DeleteButton(name), TimeSpan.FromSeconds(10)).Success, $"Delete didn't remove \"{name}\"");
+            added = null;
+        }
+        finally
+        {
+            if (FindAnywhere("Exclude a Microsoft Store app") is not null)
+            {
+                CancelDialog();
+            }
+
+            // Put the settings back the way they were, whatever happened above
+            if (added is not null)
+            {
+                app.Expand("Excluded apps");
+                Retry.WhileNull(() => DeleteButton(added), TimeSpan.FromSeconds(5)).Result?.Patterns.Invoke.Pattern.Invoke();
+                var removed = Retry.WhileNotNull(() => DeleteButton(added), TimeSpan.FromSeconds(10)).Success;
+                Assert.True(removed, $"couldn't undo: \"{added}\" is still in Excluded apps; delete it by hand");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The Delete button of an excluded app, in the Excluded apps group.
+    /// </summary>
+    private AutomationElement? DeleteButton(string name) =>
+        app.Window.FindFirstDescendant(c => c.ByName($"Delete {name}").And(c.ByControlType(ControlType.Button)));
+
     [Fact]
     public void AddSiteDialogOpensAndCancels()
     {
@@ -269,10 +337,24 @@ public sealed class WindowTests(AppFixture app)
         Thread.Sleep(400);
     }
 
+    /// <summary>
+    /// Press Cancel until the dialog is gone. A press during the dialog's opening animation can
+    /// be missed, and a dialog left open blocks every dialog after it.
+    /// </summary>
     private void CancelDialog()
     {
-        var cancel = Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByName("Cancel").And(c.ByControlType(ControlType.Button))), TimeSpan.FromSeconds(5)).Result;
-        cancel?.Patterns.Invoke.Pattern.Invoke();
-        Thread.Sleep(500);
+        var closed = Retry.WhileTrue(() =>
+        {
+            var cancel = app.Window.FindFirstDescendant(c => c.ByName("Cancel").And(c.ByControlType(ControlType.Button)));
+            if (cancel is null)
+            {
+                return false;
+            }
+            cancel.Patterns.Invoke.PatternOrDefault?.Invoke();
+            Thread.Sleep(300);
+            return true;
+        }, TimeSpan.FromSeconds(5)).Success;
+        Assert.True(closed, "a dialog wouldn't close");
+        Thread.Sleep(300);
     }
 }

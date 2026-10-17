@@ -252,15 +252,14 @@ pub fn forget(url: &str) {
     }
 }
 
-/// Load every enabled script, downloading any that aren't cached yet.
-pub async fn load(config: &Config) -> Vec<Script> {
+/// Load every enabled script, downloading any that aren't cached yet. Returns the scripts and
+/// the downloads that failed (shown in the app).
+pub async fn load(config: &Config) -> (Vec<Script>, Vec<String>) {
     let enabled: Vec<&Userscript> = config.userscripts.iter().filter(|s| s.enabled).collect();
     let missing: Vec<Userscript>  = enabled.iter().filter(|s| !cache_paths(&s.url).is_ok_and(|(p, _)| p.exists())).map(|s| (*s).clone()).collect();
-    if !missing.is_empty() {
-        download_all(&missing).await;
-    }
+    let errors = if missing.is_empty() { vec![] } else { download_all(&missing).await };
 
-    enabled
+    let scripts = enabled
         .iter()
         .filter_map(|s| {
             let (script, require) = cache_paths(&s.url).ok()?;
@@ -268,7 +267,8 @@ pub async fn load(config: &Config) -> Vec<Script> {
             let requires = fs::read_to_string(require).unwrap_or_default();
             Some(build(&parse_header(&code)?, &requires, &code))
         })
-        .collect()
+        .collect();
+    (scripts, errors)
 }
 
 // =========================================================================

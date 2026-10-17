@@ -66,6 +66,21 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 
 > Any tool like this can see your HTTPS traffic. That's how it works. Add banking or work sites to the exclusions if you'd rather they're never touched.
 
+## Install
+
+Download `CoffeeFilter_<version>_x64.msix` and `CoffeeFilter-signing.cer` from the [latest release](https://github.com/artistro08/coffee-filter/releases/latest).
+
+1. Trust the signing certificate once, in PowerShell **as administrator**:
+
+```powershell
+Import-Certificate -FilePath .\CoffeeFilter-signing.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+```
+
+2. Double-click the `.msix` and click **Install**.
+3. Open Coffee Filter and say **Yes** when it asks for admin to install its own certificate.
+
+> The package is signed with a certificate made for this project rather than one from a certificate authority, which is why Windows needs step 1. The `.cer` holds no private key, and it's not the certificate Coffee Filter uses to read HTTPS traffic; that one is made on your PC at first launch.
+
 ## Resource Use
 
 - **Core:** about 52 MB private memory with 15 lists on (Zen's set, ~970k network and cosmetic rules), 4 worker threads, near-zero CPU when idle.
@@ -97,7 +112,7 @@ dotnet build -c Release
 
 Publishing builds the Native AOT app and a signed MSIX (`dotnet publish -c Release`; the AOT linker needs `vswhere.exe` from the Visual Studio Installer folder on your `PATH`). It ends up in `app/AppPackages/`. Double-click it to install.
 
-> The MSIX is signed with a local `CN=Devin Green` code signing certificate kept in your Windows certificate store (`CurrentUser\My`, private key not exportable). Its thumbprint is set in `app/CoffeeFilter.csproj`. On another PC, make your own with `New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Devin Green"`, put its thumbprint in the csproj, set `Publisher` in `app/Package.appxmanifest` to the same subject, and add its public `.cer` to `LocalMachine\TrustedPeople` so Windows will install the package.
+> The MSIX is signed with a local `CN=Devin Green` code signing certificate kept in your Windows certificate store (`CurrentUser\My`, private key not exportable). Its thumbprint is set in `app/CoffeeFilter.csproj`. On another PC, make your own with `New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=<your name>"`, put its thumbprint in the csproj (or pass `-p:PackageCertificateThumbprint=<thumbprint>` to `dotnet publish`), set `Publisher` in `app/Package.appxmanifest` to the same subject, and add its public `.cer` to `LocalMachine\TrustedPeople` so Windows will install the package.
 
 The package turns off MSIX registry and file virtualization (`unvirtualizedResources`). Without that, Windows would hand the app a private copy of the proxy settings and blocking would silently do nothing.
 
@@ -119,7 +134,8 @@ cd ../tests/CoffeeFilter.Tests
 dotnet test
 
 # The whole window through Windows UI Automation, against the installed app.
-# Opens pages, groups, and dialogs (always canceled); changes no settings. Launching it turns
+# Opens pages, groups, and dialogs (canceled). One test excludes a Store app you haven't
+# excluded and deletes it again, so your settings end as they began. Launching it turns
 # blocking on if it was on last time, and the Store app list test needs a few Store apps installed.
 cd ../CoffeeFilter.UITests
 dotnet test
@@ -135,7 +151,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 ## Known Limits
 
 - **The app doesn't start with Windows.** When you open it, blocking comes back on unless you turned it off last time.
-- **Firefox** uses its own certificate store. Set `security.enterprise_roots.enabled` to `true` in `about:config` so it trusts the Windows store.
+- **Firefox** trusts the Windows certificate store by default on Windows. If you turned that off, set `security.enterprise_roots.enabled` back to `true` in `about:config`.
 - **Apps with certificate pinning** (some games, banking apps, Discord, etc.) will fail through the proxy. They show up under **Connection problems** with an **Exclude** button.
 - **Strict revocation checking**: tools that hard-fail when revocation can't be checked (like Windows `curl` without `--ssl-no-revoke`) will fail. Browsers don't.
 - **Windows Update and Microsoft Store downloads always connect directly.** Windows Update uses your proxy setting and refuses connections it can't verify end to end, so Microsoft's update and Store servers (`*.mp.microsoft.com`, `*.update.microsoft.com`, `*.windowsupdate.com`, ...) are never sent through or decrypted by Coffee Filter.

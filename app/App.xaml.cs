@@ -103,9 +103,28 @@ public partial class App : Application
             _coreReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
         CoreClient? core = null;
-        core = new CoreClient(() => _dispatcher?.TryEnqueue(() => OnCoreExited(core!)));
+        try
+        {
+            core = new CoreClient(() => _dispatcher?.TryEnqueue(() => OnCoreExited(core!)));
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            LogError(ex);
+            GiveUp("The filter core couldn't start, so ad blocking is off. Reinstall Coffee Filter to fix it.");
+            return;
+        }
         Core = core;
         _ = InitAsync(resumeBlocking);
+    }
+
+    /// <summary>
+    /// No core is coming: show why, and release every command waiting for one (they'd
+    /// otherwise wait forever, leaving buttons spinning), each with the same message.
+    /// </summary>
+    private void GiveUp(string message)
+    {
+        _coreReady.TrySetException(new InvalidOperationException(message));
+        Failed?.Invoke(message);
     }
 
     private async Task InitAsync(bool resumeBlocking)
@@ -117,7 +136,7 @@ public partial class App : Application
             if (!reply.Ok && reply.Status is null)
             {
                 _coreRefused = true;
-                Failed?.Invoke(reply.Error ?? "The filter core couldn't start.");
+                GiveUp(reply.Error ?? "The filter core couldn't start.");
                 return;
             }
             _coreReady.TrySetResult();
@@ -175,7 +194,7 @@ public partial class App : Application
         }
         if (_coreRestarts.Count >= 3)
         {
-            Failed?.Invoke("The filter core keeps stopping, so ad blocking is off. Quit and reopen Coffee Filter to try again.");
+            GiveUp("The filter core keeps stopping, so ad blocking is off. Quit and reopen Coffee Filter to try again.");
             return;
         }
         _coreRestarts.Enqueue(now);
@@ -229,12 +248,14 @@ public partial class App : Application
 
     public void ShowWindow()
     {
+        SetBackground(false);
         if (_window is null)
         {
             _window         = new MainWindow();
             _window.Closed += (_, _) =>
             {
                 _window = null;
+                SetBackground(true);
                 // Release the UI tree, then trim the working set while running in the tray
                 _dispatcher?.TryEnqueue(DispatcherQueuePriority.Low, () =>
                 {
@@ -252,6 +273,55 @@ public partial class App : Application
     [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static partial bool K32EmptyWorkingSet(nint process);
+
+    /// <summary>
+    /// With no window open, the app only keeps the tray icon and watches the core, so it runs
+    /// in efficiency mode at low priority and stays out of the way when the PC is busy. Opening
+    /// the window or the tray menu puts it back to normal right away. (Blocking itself runs in
+    /// the core, which is never slowed down.)
+    /// </summary>
+    public void SetBackground(bool background)
+    {
+        if (background && _window is not null)
+        {
+            return;
+        }
+        var state = new PowerThrottlingState
+        {
+            Version     = 1,
+            ControlMask = PowerThrottlingExecutionSpeed,
+            StateMask   = background ? PowerThrottlingExecutionSpeed : 0,
+        };
+        unsafe
+        {
+            SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, (uint)sizeof(PowerThrottlingState));
+        }
+        SetPriorityClass(GetCurrentProcess(), background ? BelowNormalPriorityClass : NormalPriorityClass);
+    }
+
+    private const int  ProcessPowerThrottling        = 4;
+    private const uint PowerThrottlingExecutionSpeed = 0x1;
+    private const uint NormalPriorityClass           = 0x20;
+    private const uint BelowNormalPriorityClass      = 0x4000;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct PowerThrottlingState
+    {
+        public uint Version;
+        public uint ControlMask;
+        public uint StateMask;
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial nint GetCurrentProcess();
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static unsafe partial bool SetProcessInformation(nint process, int infoClass, void* info, uint size);
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool SetPriorityClass(nint process, uint priorityClass);
 
     [System.Runtime.InteropServices.LibraryImport("user32.dll")]
     private static partial int GetSystemMetrics(int index);
@@ -307,7 +377,7 @@ public partial class App : Application
             if (uri.Host == "exclude")
             {
                 value = value.Trim().TrimStart('*', '.').TrimEnd('.').ToLowerInvariant();
-                if (value.Length is 0 or > 253 || !value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-'))
+                if (value.Length is 0 or > 253 || !value.Contains('.') || !value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-'))
                 {
                     return null;
                 }

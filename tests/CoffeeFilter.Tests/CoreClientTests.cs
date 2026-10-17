@@ -80,8 +80,9 @@ public sealed class CoreClientTests : IDisposable
         Assert.False(bad.Ok);
         Assert.Contains("https://", bad.Error);
 
+        // The address doesn't exist, so the list is added and its failed download is reported
         var added = await _core.SendAsync("add_list", new JsonObject { ["name"] = "Mine", ["url"] = "https://invalid.invalid/mine.txt" });
-        Assert.True(added.Ok);
+        Assert.Contains("Mine", added.Error);
         Assert.Contains(added.Status!.Lists, l => l.Name == "Mine" && l.Kind == "custom");
 
         var duplicate = await _core.SendAsync("add_list", new JsonObject { ["name"] = "Mine", ["url"] = "https://invalid.invalid/other.txt" });
@@ -161,8 +162,9 @@ public sealed class CoreClientTests : IDisposable
         await _core.WaitReadyAsync();
         const string name = "Café – Liste";
 
+        // The address doesn't exist, so the list is added and its failed download is reported (by name)
         var added = await _core.SendAsync("add_list", new JsonObject { ["name"] = name, ["url"] = "https://invalid.invalid/cafe.txt" });
-        Assert.True(added.Ok, added.Error);
+        Assert.Contains(name, added.Error);
         Assert.Contains(added.Status!.Lists, l => l.Name == name);
 
         var toggled = await _core.SendAsync("set_list", new JsonObject { ["name"] = name, ["enabled"] = false });
