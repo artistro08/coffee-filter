@@ -111,9 +111,18 @@ public sealed class FlyoutTests(AppFixture app)
     public void UpdateListsMessageGoesAwayOnItsOwn()
     {
         var flyout = OpenFlyout();
-        flyout.FindFirstDescendant(c => c.ByName("Update now").And(c.ByControlType(ControlType.Button))).Patterns.Invoke.Pattern.Invoke();
+        var update = flyout.FindFirstDescendant(c => c.ByName("Update now").And(c.ByControlType(ControlType.Button)));
+        update.Patterns.Invoke.Pattern.Invoke();
 
-        // Shows once the lists are updated, then goes away a few seconds later
+        // Shows once the lists are updated, with a close button that closes it
+        Assert.NotNull(Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Lists are up to date.")), TimeSpan.FromSeconds(120)).Result);
+        flyout.FindFirstDescendant(c => c.ByName("Close").And(c.ByControlType(ControlType.Button))).Patterns.Invoke.Pattern.Invoke();
+        Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Lists are up to date.")), TimeSpan.FromSeconds(3)).Success, "Close didn't close the message");
+        Assert.NotNull(FindFlyout());
+
+        // Left alone, it goes away a few seconds later
+        Retry.WhileFalse(() => update.IsEnabled, TimeSpan.FromSeconds(10));
+        update.Patterns.Invoke.Pattern.Invoke();
         var message = Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Lists are up to date.")), TimeSpan.FromSeconds(120)).Result;
         Assert.NotNull(message);
         Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Lists are up to date.")), TimeSpan.FromSeconds(8)).Success, "the message didn't go away");

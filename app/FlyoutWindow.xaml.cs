@@ -2,6 +2,7 @@ using System.Numerics;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Animation;
@@ -212,6 +213,7 @@ public sealed partial class FlyoutWindow : Window
         _released    = true;
         _isOpen      = false;
         _app.Changed -= OnAppChanged;
+        _messageTimer.Stop();
         Close();
     }
 
@@ -435,7 +437,8 @@ public sealed partial class FlyoutWindow : Window
     }
 
     /// <summary>
-    /// Shows a line under the controls. A success message goes away on its own after
+    /// Shows an alert under the controls, green for success and red for an error, with a close
+    /// button. A success message goes away on its own after
     /// <see cref="MessageDuration"/>, and one that arrives after the flyout closed is dropped;
     /// an error stays until the next action or close, so one that arrives while closed shows next time.
     /// </summary>
@@ -446,9 +449,9 @@ public sealed partial class FlyoutWindow : Window
             return;
         }
         _messageTimer.Stop();
-        Message.Text       = text;
-        Message.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[error ? "SystemFillColorCriticalBrush" : "TextFillColorSecondaryBrush"];
-        Message.Visibility = Visibility.Visible;
+        Message.Severity = error ? InfoBarSeverity.Error : InfoBarSeverity.Success;
+        Message.Message  = text;
+        Message.IsOpen   = true;
         if (error)
         {
             return;
@@ -459,7 +462,7 @@ public sealed partial class FlyoutWindow : Window
     private void HideMessage()
     {
         _messageTimer.Stop();
-        Message.Visibility = Visibility.Collapsed;
+        Message.IsOpen = false;
     }
 
     private void OnSettingsClicked(object sender, RoutedEventArgs e)

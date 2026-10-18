@@ -148,11 +148,10 @@
                         </Grid>
                         <!-- /Excluded Apps -->
 
-                        <TextBlock x:Name="Message"
-                                   Margin="2,4,2,0"
-                                   Style="{StaticResource CaptionTextBlockStyle}"
-                                   TextWrapping="Wrap"
-                                   Visibility="Collapsed" />
+                        <InfoBar x:Name="Message"
+                                 Margin="0,4,0,0"
+                                 IsOpen="False"
+                                 IsClosable="True" />
                     </StackPanel>
                     <!-- /Controls -->
 
