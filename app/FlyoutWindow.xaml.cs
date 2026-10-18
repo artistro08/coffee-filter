@@ -154,7 +154,15 @@ public sealed partial class FlyoutWindow : Window
         var timer = DispatcherQueue.CreateTimer();
         timer.Interval    = TimeSpan.FromMilliseconds(150);
         timer.IsRepeating = false;
-        timer.Tick       += (_, _) => ShowFlyout(atCursor);
+        timer.Tick       += (_, _) =>
+        {
+            // Turned off in the meantime: the window is gone
+            if (_released)
+            {
+                return;
+            }
+            ShowFlyout(atCursor);
+        };
         timer.Start();
     }
 

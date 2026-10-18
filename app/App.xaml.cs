@@ -612,6 +612,11 @@ public partial class App : Application
     /// </summary>
     public void SetFlyoutEnabled(bool enabled)
     {
+        // The window sets its switch on every open; nothing changed, nothing to save
+        if (Settings.UseFlyout == enabled)
+        {
+            return;
+        }
         Settings.UseFlyout = enabled;
         Settings.Save();
         if (enabled || _flyout is null)
