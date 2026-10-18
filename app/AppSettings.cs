@@ -14,6 +14,11 @@ public class AppSettings
     public bool ShowTrayIcon { get; set; } = true;
 
     /// <summary>
+    /// Whether a tray click (or its shortcut) opens the flyout; off opens the window instead.
+    /// </summary>
+    public bool UseFlyout { get; set; } = true;
+
+    /// <summary>
     /// Whether blocking was on when last changed, so the next launch starts the same way.
     /// </summary>
     public bool BlockingEnabled { get; set; } = true;

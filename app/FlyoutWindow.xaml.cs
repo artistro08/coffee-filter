@@ -41,6 +41,7 @@ public sealed partial class FlyoutWindow : Window
     private long _hiddenAt;
     private bool _isOpen;
     private bool _updating;
+    private bool _released;
     private TaskbarEdge _edge;
 
     // Current window region in window pixels
@@ -94,10 +95,14 @@ public sealed partial class FlyoutWindow : Window
         // only once it's shown again.
         PanelContent.SizeChanged += (_, _) => ResizePanel(animate: _isOpen);
         WindowRoot.LayoutUpdated += (_, _) => ClipToPanel();
-        _app.Changed             += (reply, _) => Render(reply);
+        _app.Changed             += OnAppChanged;
         AppWindow.Closing        += (_, e) =>
         {
-            // Only Quit really closes it
+            // Only Quit, or turning the flyout off, really closes it
+            if (_released)
+            {
+                return;
+            }
             e.Cancel = true;
             HideFlyout();
         };
@@ -173,6 +178,17 @@ public sealed partial class FlyoutWindow : Window
         Slide(HiddenOffset(), ExitDuration, new Vector2(1, 0), new Vector2(1, 1));
     }
 
+    /// <summary>
+    /// Closes the window for good (the flyout was turned off in Settings).
+    /// </summary>
+    public void Release()
+    {
+        _released    = true;
+        _isOpen      = false;
+        _app.Changed -= OnAppChanged;
+        Close();
+    }
+
     private void ShowFlyout(bool atCursor)
     {
         _isOpen  = true;
@@ -211,6 +227,8 @@ public sealed partial class FlyoutWindow : Window
     // =========================================================================
     // CONTENT
     // =========================================================================
+
+    private void OnAppChanged(CoreReply reply, bool lists) => Render(reply);
 
     private void Render(CoreReply reply)
     {
@@ -484,7 +502,7 @@ public sealed partial class FlyoutWindow : Window
 
         slide.Completed += (_, _) =>
         {
-            if (_slide != slide || _isOpen)
+            if (_slide != slide || _isOpen || _released)
             {
                 return;
             }

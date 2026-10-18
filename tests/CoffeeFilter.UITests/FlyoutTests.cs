@@ -9,7 +9,8 @@ namespace CoffeeFilter.UITests;
 
 /// <summary>
 /// The tray flyout, opened with its global shortcut the way a person would, and the Keyboard
-/// shortcuts settings. Nothing is changed: the picker is canceled, the flyout's switch isn't touched.
+/// shortcuts settings. Nothing is changed: the picker is canceled, the flyout's switch isn't touched,
+/// and Use tray flyout is turned back on afterward.
 /// </summary>
 [Collection("App")]
 public sealed class FlyoutTests(AppFixture app)
@@ -107,6 +108,39 @@ public sealed class FlyoutTests(AppFixture app)
     }
 
     [Fact]
+    public void TurningTheFlyoutOffOpensTheWindowInstead()
+    {
+        app.GoHome();
+        var toggle = FlyoutSwitch();
+        Assert.True(toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On, "Turn on Use tray flyout in Coffee Filter to run this test.");
+        try
+        {
+            toggle.Patterns.Toggle.Pattern.Toggle();
+            Assert.True(Retry.WhileFalse(() => toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.Off, TimeSpan.FromSeconds(3)).Success, "the switch didn't turn off");
+
+            // The shortcut brings the window forward, and no flyout opens
+            PressFlyoutShortcut();
+            Assert.True(Retry.WhileFalse(() => app.Window.Properties.NativeWindowHandle.Value == GetForegroundWindow(), TimeSpan.FromSeconds(3)).Success, "the window didn't come to the front");
+            Thread.Sleep(1000);
+            Assert.Null(FindFlyout());
+        }
+        finally
+        {
+            // Back on, the way it was
+            if (toggle.Patterns.Toggle.Pattern.ToggleState.Value != ToggleState.On)
+            {
+                toggle.Patterns.Toggle.Pattern.Toggle();
+            }
+        }
+        Assert.Equal(ToggleState.On, toggle.Patterns.Toggle.Pattern.ToggleState.Value);
+
+        // And the flyout opens again
+        OpenFlyout();
+        Keyboard.Type(VirtualKeyShort.ESCAPE);
+        Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
     public void EscClosesTheFlyout()
     {
         OpenFlyout();
@@ -122,6 +156,16 @@ public sealed class FlyoutTests(AppFixture app)
     /// Press the saved Open the tray flyout shortcut and wait for the flyout.
     /// </summary>
     private AutomationElement OpenFlyout()
+    {
+        var text = PressFlyoutShortcut();
+        return Retry.WhileNull(FindFlyout, TimeSpan.FromSeconds(5)).Result
+            ?? throw new InvalidOperationException($"{text} didn't open the flyout.");
+    }
+
+    /// <summary>
+    /// Press the saved Open the tray flyout shortcut; returns it as text.
+    /// </summary>
+    private static string PressFlyoutShortcut()
     {
         var text = FlyoutShortcut();
         Assert.True(Hotkey.TryParse(text, out var hotkey), "Set a shortcut for \"Open the tray flyout\" in Coffee Filter to run this test.");
@@ -149,10 +193,15 @@ public sealed class FlyoutTests(AppFixture app)
         {
             Keyboard.Type((VirtualKeyShort)hotkey.Key);
         }
-
-        return Retry.WhileNull(FindFlyout, TimeSpan.FromSeconds(5)).Result
-            ?? throw new InvalidOperationException($"{text} didn't open the flyout.");
+        return text;
     }
+
+    /// <summary>
+    /// The Use tray flyout switch in the window (the card shares its name, so it's the one that toggles).
+    /// </summary>
+    private AutomationElement FlyoutSwitch() =>
+        Retry.WhileNull(() => app.Window.FindAllDescendants(c => c.ByName("Use tray flyout")).FirstOrDefault(e => e.Patterns.Toggle.IsSupported), TimeSpan.FromSeconds(5)).Result
+        ?? throw new InvalidOperationException("No Use tray flyout switch.");
 
     /// <summary>
     /// A shortcut's picker button, by its automation ID ("Shortcut" and the action).
