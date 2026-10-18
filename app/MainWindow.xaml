@@ -173,6 +173,13 @@
                         </toolkit:SettingsCard.HeaderIcon>
                         <ToggleSwitch x:Name="TraySwitch" AutomationProperties.Name="Show tray icon" Toggled="OnTrayToggled" />
                     </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="Use tray flyout"
+                                          Description="Clicking the tray icon opens a quick panel. Turn it off to open this window instead and use less memory.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE8A0;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ToggleSwitch x:Name="FlyoutSwitch" AutomationProperties.Name="Use tray flyout" Toggled="OnFlyoutToggled" />
+                    </toolkit:SettingsCard>
                     <toolkit:SettingsCard x:Name="StartupCard"
                                           Header="Start with Windows"
                                           Description="Opens in the tray when you sign in, so ad blocking is on from the start.">

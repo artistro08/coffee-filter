@@ -80,6 +80,7 @@ public sealed partial class MainWindow : Window
         }
 
         TraySwitch.IsOn       = _app.Settings.ShowTrayIcon;
+        FlyoutSwitch.IsOn     = _app.Settings.UseFlyout;
         AboutCard.Description = $"Version {App.Version}";
         BuildShortcuts();
         _ = ShowStartupAsync(Startup.GetAsync());
@@ -1455,6 +1456,8 @@ public sealed partial class MainWindow : Window
         _app.Settings.Save();
         _app.SetTrayVisible(TraySwitch.IsOn);
     }
+
+    private void OnFlyoutToggled(object sender, RoutedEventArgs e) => _app.SetFlyoutEnabled(FlyoutSwitch.IsOn);
 
     private void OnQuitClicked(object sender, RoutedEventArgs e) => _app.Quit();
 

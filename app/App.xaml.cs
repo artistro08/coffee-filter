@@ -584,11 +584,16 @@ public partial class App : Application
     // =========================================================================
 
     /// <summary>
-    /// Open the tray flyout, or close it if it's open.
+    /// Open the tray flyout, or close it if it's open. With the flyout turned off, opens the window.
     /// </summary>
     /// <param name="atCursor">On the monitor under the cursor (a tray click); otherwise the main taskbar's.</param>
     public void ToggleFlyout(bool atCursor)
     {
+        if (!Settings.UseFlyout)
+        {
+            ShowWindow();
+            return;
+        }
         try
         {
             (_flyout ??= new FlyoutWindow()).Toggle(atCursor);
@@ -599,6 +604,27 @@ public partial class App : Application
             LogError(ex);
             ShowWindow();
         }
+    }
+
+    /// <summary>
+    /// Turn the flyout on or off. Off closes it for good, so its window and acrylic stop
+    /// using memory; it's made again on the next open after turning it back on.
+    /// </summary>
+    public void SetFlyoutEnabled(bool enabled)
+    {
+        // The window sets its switch on every open; nothing changed, nothing to save
+        if (Settings.UseFlyout == enabled)
+        {
+            return;
+        }
+        Settings.UseFlyout = enabled;
+        Settings.Save();
+        if (enabled || _flyout is null)
+        {
+            return;
+        }
+        _flyout.Release();
+        _flyout = null;
     }
 
     /// <summary>
