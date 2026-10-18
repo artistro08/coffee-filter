@@ -93,6 +93,22 @@ public sealed class CoreClientTests : IDisposable
     }
 
     [Fact]
+    public async Task DetailedLogTurnsOnAndOffAndIsSaved()
+    {
+        var ready = await _core.WaitReadyAsync();
+        Assert.False(ready.Status!.DetailedLog);
+
+        var on = await _core.SendAsync("set_detailed_log", new JsonObject { ["enabled"] = true });
+        Assert.True(on.Ok);
+        Assert.True(on.Status!.DetailedLog);
+        var saved = File.ReadAllText(Path.Combine(_profile, "CoffeeFilter", "config.json"));
+        Assert.Contains("\"detailed_log\":true", saved.Replace(" ", ""));
+
+        var off = await _core.SendAsync("set_detailed_log", new JsonObject { ["enabled"] = false });
+        Assert.False(off.Status!.DetailedLog);
+    }
+
+    [Fact]
     public async Task ExclusionsAreCleanedAndSaved()
     {
         await _core.WaitReadyAsync();

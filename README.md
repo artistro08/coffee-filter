@@ -210,6 +210,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - `%LOCALAPPDATA%\CoffeeFilter\problems.json` — connections Coffee Filter broke, for troubleshooting
 - `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, flyout, window at launch, blocking on or off, shortcuts, certificate setup version)
 - `%LOCALAPPDATA%\CoffeeFilter\app-errors.log` — app errors, if any
+- `%LOCALAPPDATA%\CoffeeFilter\debug.log` — while **Detailed logs** is on (under **App**): every connection (decrypted or passed through, and why), every request (blocked or allowed), and every page (filtered, or why not). Addresses leave out anything after a `?`. It starts over past 10 MB, keeping the last one as `debug.old.log`.
 
 ## License
 

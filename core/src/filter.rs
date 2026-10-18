@@ -38,6 +38,8 @@ pub struct Shared {
     pub blocked:     AtomicU64,
     pub allowed:     AtomicU64,
     pub log:         Log,
+    /// Detailed log (debug.log), on only while turned on in the app.
+    pub trace:       Trace,
     /// Resolves short links (see SHORTENERS).
     pub resolver:    reqwest::Client,
     pub apps:        RwLock<Arc<Vec<ExcludedApp>>>,
@@ -104,6 +106,61 @@ impl Log {
             self.entries.lock().unwrap().1.clear();
         }
     }
+}
+
+/// Detailed log for tracking down problems: every connection, request, and page, one line
+/// each, in `debug.log`. Off costs one atomic read per event. Addresses are written without
+/// their query string, which can hold tokens. Past `MAX_BYTES` it starts over, keeping the
+/// previous file as `debug.old.log`.
+#[derive(Default)]
+pub struct Trace {
+    on:   AtomicBool,
+    file: Mutex<Option<fs::File>>,
+    /// Folder for the file; the data folder unless a test sets one.
+    dir:  Option<PathBuf>,
+}
+
+impl Trace {
+    const MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+    pub fn set(&self, on: bool) {
+        self.on.store(on, Ordering::Relaxed);
+        if !on {
+            *self.file.lock().unwrap() = None;
+        }
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
+    /// Write one line; `format_args!` keeps this free when the log is off.
+    pub fn write(&self, line: std::fmt::Arguments) {
+        if !self.is_on() {
+            return;
+        }
+        use std::io::Write;
+        let Some(dir) = self.dir.clone().or_else(|| data_dir().ok()) else { return };
+        let path     = dir.join("debug.log");
+        let mut file = self.file.lock().unwrap();
+
+        // Start over once it's big, keeping one previous file
+        if file.as_ref().and_then(|f| f.metadata().ok()).is_some_and(|m| m.len() > Self::MAX_BYTES) {
+            *file = None;
+            let _ = fs::rename(&path, dir.join("debug.old.log"));
+        }
+        if file.is_none() {
+            *file = fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        }
+        if let Some(f) = file.as_mut() {
+            let _ = writeln!(f, "{} {line}", time::OffsetDateTime::now_utc());
+        }
+    }
+}
+
+/// An address without its query string or fragment, for the detailed log.
+pub fn without_query(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
 }
 
 // =========================================================================
@@ -643,6 +700,7 @@ impl HttpHandler for Blocker {
         // Excluded sites and apps over plain HTTP are left alone too: no blocking, no page changes
         let excluded_site = is_excluded(&self.shared.exclusions.read().unwrap(), &host) || is_excluded(&sysproxy::SYSTEM_HOSTS, &host);
         if excluded_site || self.is_excluded_app(ctx).await {
+            self.shared.trace.write(format_args!("{} {} untouched ({})", req.method(), without_query(&req.uri().to_string()), if excluded_site { "excluded site" } else { "excluded app" }));
             return req.into();
         }
 
@@ -671,15 +729,22 @@ impl HttpHandler for Blocker {
             let accepts_html = header("accept").is_some_and(|a| a.contains("text/html"));
             let page_load    = matches!(kind, "document" | "subdocument") || (header("sec-fetch-dest").is_none() && accepts_html);
             if req.method() == Method::GET && kind == "document" && userscripts::is_install_link(req.uri()) {
-                self.install = Some(url);
+                self.install = Some(url.clone());
             } else if req.method() == Method::GET && page_load {
-                self.page = Some(url);
+                self.page = Some(url.clone());
             }
+            self.shared.trace.write(format_args!(
+                "{} {} allowed dest={kind}{}",
+                req.method(),
+                without_query(&url),
+                if self.page.is_some() { " page" } else { "" }
+            ));
             self.shared.allowed.fetch_add(1, Ordering::Relaxed);
             return req.into();
         }
 
         self.shared.blocked.fetch_add(1, Ordering::Relaxed);
+        self.shared.trace.write(format_args!("{} {} blocked dest={kind}", req.method(), without_query(&url)));
         self.shared.log.record(&url, kind, source);
         let response = Response::builder().status(StatusCode::FORBIDDEN);
         let response = if kind == "document" {
@@ -694,28 +759,69 @@ impl HttpHandler for Blocker {
         if let Some(url) = self.install.take() {
             return userscripts::install_page(res, &url).await;
         }
-        let Some(url) = self.page.take() else { return res };
+        let Some(url) = self.page.take() else {
+            // A page that arrives without its request marked as one gets no filtering; worth seeing
+            if self.shared.trace.is_on() && res.headers().get("content-type").is_some_and(|t| t.as_bytes().starts_with(b"text/html")) {
+                self.shared.trace.write(format_args!("html response {} not filtered: its request wasn't a page load", res.status()));
+            }
+            return res;
+        };
         let engine  = self.shared.engine.read().unwrap().clone();
         let scripts = self.shared.userscripts.read().unwrap().clone();
-        cosmetic::inject(res, &engine, &userscripts::for_page(&scripts, &url), &url)
+        cosmetic::inject(res, &engine, &userscripts::for_page(&scripts, &url), &url, &self.shared.trace)
     }
 
     /// Decrypt only HTTPS on 443 for hosts not excluded; everything else is tunneled untouched.
     async fn should_intercept_connect(&mut self, ctx: &HttpContext, req: &Request<Body>) -> bool {
         let Some(host) = req.uri().host() else { return false };
-        req.uri().port_u16() == Some(443) && self.decrypts(host) && !self.is_excluded_app(ctx).await
+        let tunnel = if req.uri().port_u16() != Some(443) {
+            Some("not port 443")
+        } else if !self.decrypts(host) {
+            Some("private, system, or excluded site")
+        } else if self.is_excluded_app(ctx).await {
+            Some("excluded app")
+        } else {
+            None
+        };
+        self.shared.trace.write(format_args!("connect {} from {} {}", req.uri(), ctx.client_addr, tunnel.map_or("decrypted".into(), |why| format!("tunneled ({why})"))));
+        tunnel.is_none()
     }
 
     /// Check again with the site name inside the TLS handshake, which can differ from the
     /// CONNECT address; a certificate is only ever made for a name that passes.
     async fn should_intercept_tls(&mut self, _ctx: &HttpContext, hello: ClientHello<'_>) -> bool {
-        hello.server_name().is_some_and(|host| self.decrypts(host))
+        let decrypt = hello.server_name().is_some_and(|host| self.decrypts(host));
+        if !decrypt {
+            self.shared.trace.write(format_args!("tls name {:?} tunneled (private, system, or excluded site)", hello.server_name()));
+        }
+        decrypt
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_writes_only_while_on_and_drops_queries() {
+        let dir   = std::env::temp_dir().join(format!("cf-trace-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let trace = Trace { dir: Some(dir.clone()), ..Default::default() };
+        let log   = dir.join("debug.log");
+
+        trace.write(format_args!("before"));
+        assert!(!log.exists(), "nothing is written while it's off");
+
+        trace.set(true);
+        trace.write(format_args!("GET {} allowed", without_query("https://a.com/p?token=secret#top")));
+        trace.set(false);
+        trace.write(format_args!("after"));
+
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(text.contains("GET https://a.com/p allowed"), "{text}");
+        assert!(!text.contains("secret") && !text.contains("before") && !text.contains("after"), "{text}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn fetch_refuses_plain_http() {

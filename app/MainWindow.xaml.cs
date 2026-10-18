@@ -145,6 +145,7 @@ public sealed partial class MainWindow : Window
         _updating                = true;
         BlockingSwitch.IsOn      = s.Running;
         BlockingSwitch.IsEnabled = s.CertInstalled;
+        DetailedLogSwitch.IsOn   = s.DetailedLog;
         _updating                = false;
 
         BlockingCard.Description = $"{s.Rules:N0} rules";
@@ -1525,6 +1526,24 @@ public sealed partial class MainWindow : Window
         }
         _app.Settings.ShowWindowAtLaunch = LaunchSwitch.IsOn;
         _app.Settings.Save();
+    }
+
+    private async void OnDetailedLogToggled(object sender, RoutedEventArgs e)
+    {
+        if (_updating)
+        {
+            return;
+        }
+        await _app.RunAsync("set_detailed_log", new JsonObject { ["enabled"] = DetailedLogSwitch.IsOn });
+    }
+
+    /// <summary>
+    /// The Coffee Filter folder, where debug.log (and app-errors.log) are.
+    /// </summary>
+    private void OnOpenLogFolderClicked(object sender, RoutedEventArgs e)
+    {
+        var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoffeeFilter");
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder) { UseShellExecute = true });
     }
 
     private void OnQuitClicked(object sender, RoutedEventArgs e) => _app.Quit();

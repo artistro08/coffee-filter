@@ -54,6 +54,9 @@ pub struct Config {
     pub userscripts: Vec<Userscript>,
     #[serde(default)]
     pub excluded_apps: Vec<ExcludedApp>,
+    /// Write the detailed log (debug.log) for tracking down problems.
+    #[serde(default)]
+    pub detailed_log: bool,
 }
 
 impl Default for Config {
@@ -65,6 +68,7 @@ impl Default for Config {
             exclusions: vec![],
             userscripts: vec![],
             excluded_apps: vec![],
+            detailed_log: false,
         }
     }
 }

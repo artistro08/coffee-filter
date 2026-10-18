@@ -73,6 +73,8 @@ enum Command {
     /// Turn on the live log and get entries newer than `after`.
     Log { after: u64 },
     LogStop,
+    /// Turn the detailed log (debug.log) on or off.
+    SetDetailedLog { enabled: bool },
 }
 
 struct App {
@@ -153,6 +155,7 @@ impl App {
             "lists":          self.config.lists,
             "userscripts":    self.config.userscripts,
             "problems":       self.problems.list(),
+            "detailed_log":   self.config.detailed_log,
         })
     }
 
@@ -385,6 +388,12 @@ impl App {
                 self.shared.log.set(false);
                 Ok(())
             }
+            Command::SetDetailedLog { enabled } => {
+                self.config.detailed_log = enabled;
+                self.config.save().map_err(|e| e.to_string())?;
+                self.shared.trace.set(enabled);
+                Ok(())
+            }
             Command::AddUserscript { url } => {
                 // https only: a script runs inside pages, so it must not be swappable on the way
                 let url = url.trim().to_string();
@@ -486,10 +495,12 @@ async fn main() {
         blocked:     Default::default(),
         allowed:     Default::default(),
         log:         Default::default(),
+        trace:       Default::default(),
         resolver:    filter::resolver_client().expect("HTTP client"),
         apps:        RwLock::new(Arc::new(config.excluded_apps.clone())),
         app_cache:   Default::default(),
     });
+    shared.trace.set(config.detailed_log);
     pressure::watch_memory(shared.clone());
     let mut app = App { config, shared, problems, rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
     app.refresh_cert();
@@ -562,6 +573,10 @@ mod tests {
     fn commands_parse_from_json() {
         assert!(matches!(serde_json::from_str(r#"{"cmd":"start"}"#), Ok(Command::Start)));
         assert!(matches!(serde_json::from_str(r#"{"cmd":"renew_cert"}"#), Ok(Command::RenewCert)));
+        assert!(matches!(
+            serde_json::from_str(r#"{"cmd":"set_detailed_log","enabled":true}"#),
+            Ok(Command::SetDetailedLog { enabled: true })
+        ));
         assert!(matches!(
             serde_json::from_str(r#"{"cmd":"add_list","name":"a","url":"https://a"}"#),
             Ok(Command::AddList { .. })

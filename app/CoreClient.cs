@@ -95,6 +95,11 @@ public class CoreStatus
     public List<FilterList> Lists { get; set; } = [];
     public List<Userscript> Userscripts { get; set; } = [];
     public List<Problem> Problems { get; set; } = [];
+
+    /// <summary>
+    /// Whether the core writes the detailed log (debug.log).
+    /// </summary>
+    public bool DetailedLog { get; set; }
 }
 
 public class CoreReply

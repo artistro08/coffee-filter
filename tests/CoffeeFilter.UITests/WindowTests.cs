@@ -23,7 +23,7 @@ public sealed class WindowTests(AppFixture app)
         {
             Assert.NotNull(app.Find(section));
         }
-        foreach (var card in new[] { "Ad blocking", "Certificate", "Connection problems", "Update lists", "Add a filter list", "Show tray icon", "Use tray flyout", "Show window at launch", "Start with Windows", "Quit Coffee Filter" })
+        foreach (var card in new[] { "Ad blocking", "Certificate", "Connection problems", "Update lists", "Add a filter list", "Show tray icon", "Use tray flyout", "Show window at launch", "Start with Windows", "Detailed logs", "Quit Coffee Filter" })
         {
             Assert.NotNull(app.Find(card));
         }

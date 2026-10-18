@@ -195,6 +195,16 @@
                         </toolkit:SettingsCard.HeaderIcon>
                         <ToggleSwitch x:Name="StartupSwitch" AutomationProperties.Name="Start with Windows" IsEnabled="False" Toggled="OnStartupToggled" />
                     </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="Detailed logs"
+                                          Description="Writes every connection and page to debug.log, to help track down problems. Addresses leave out anything after a ?. Turn it off when you're done.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE9D9;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Content="Open folder" AutomationProperties.Name="Open log folder" Click="OnOpenLogFolderClicked" />
+                            <ToggleSwitch x:Name="DetailedLogSwitch" AutomationProperties.Name="Detailed logs" Toggled="OnDetailedLogToggled" />
+                        </StackPanel>
+                    </toolkit:SettingsCard>
                     <toolkit:SettingsCard Header="Quit Coffee Filter">
                         <toolkit:SettingsCard.HeaderIcon>
                             <FontIcon Glyph="&#xE7E8;" />
