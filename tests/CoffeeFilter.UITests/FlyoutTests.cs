@@ -272,16 +272,7 @@ public sealed class FlyoutTests(AppFixture app)
     /// </summary>
     private static string FlyoutShortcut()
     {
-        var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoffeeFilter", "app.json");
-        // The app swaps in a new app.json when a setting changes; read without blocking the
-        // swap, and try again if it lands in the middle of one
-        var text = Retry.WhileException(() =>
-        {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            return reader.ReadToEnd();
-        }, TimeSpan.FromSeconds(2), throwOnTimeout: true).Result;
-        using var json = JsonDocument.Parse(text);
+        using var json = AppFixture.ReadAppSettings();
         return json.RootElement.TryGetProperty("Shortcuts", out var shortcuts) && shortcuts.TryGetProperty("OpenFlyout", out var saved)
             ? saved.GetString() ?? ""
             : "Win+Alt+C";

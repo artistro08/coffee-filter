@@ -87,6 +87,7 @@ public sealed partial class MainWindow : Window
 
         TraySwitch.IsOn       = _app.Settings.ShowTrayIcon;
         FlyoutSwitch.IsOn     = _app.Settings.UseFlyout;
+        LaunchSwitch.IsOn     = _app.Settings.ShowWindowAtLaunch;
         AboutCard.Description = $"Version {App.Version}";
         BuildShortcuts();
         _ = ShowStartupAsync(Startup.GetAsync());
@@ -1514,6 +1515,17 @@ public sealed partial class MainWindow : Window
     }
 
     private void OnFlyoutToggled(object sender, RoutedEventArgs e) => _app.SetFlyoutEnabled(FlyoutSwitch.IsOn);
+
+    private void OnLaunchToggled(object sender, RoutedEventArgs e)
+    {
+        // Set once when the window opens; nothing changed, nothing to save
+        if (_app.Settings.ShowWindowAtLaunch == LaunchSwitch.IsOn)
+        {
+            return;
+        }
+        _app.Settings.ShowWindowAtLaunch = LaunchSwitch.IsOn;
+        _app.Settings.Save();
+    }
 
     private void OnQuitClicked(object sender, RoutedEventArgs e) => _app.Quit();
 

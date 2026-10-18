@@ -180,6 +180,13 @@
                         </toolkit:SettingsCard.HeaderIcon>
                         <ToggleSwitch x:Name="FlyoutSwitch" AutomationProperties.Name="Use tray flyout" Toggled="OnFlyoutToggled" />
                     </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="Show window at launch"
+                                          Description="Opening Coffee Filter shows this window. Turn it off to start in the tray.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE8A7;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ToggleSwitch x:Name="LaunchSwitch" AutomationProperties.Name="Show window at launch" Toggled="OnLaunchToggled" />
+                    </toolkit:SettingsCard>
                     <toolkit:SettingsCard x:Name="StartupCard"
                                           Header="Start with Windows"
                                           Description="Opens in the tray when you sign in, so ad blocking is on from the start.">

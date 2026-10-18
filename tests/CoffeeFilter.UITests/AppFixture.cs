@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -25,14 +26,24 @@ public sealed class AppFixture : IDisposable
     {
         // Launching again while it runs just brings the window back (single instance)
         var family = PackageFamilyName();
-        Process.Start(new ProcessStartInfo("explorer.exe", $"shell:AppsFolder\\{family}!App") { UseShellExecute = true })?.WaitForExit();
+        void Launch() => Process.Start(new ProcessStartInfo("explorer.exe", $"shell:AppsFolder\\{family}!App") { UseShellExecute = true })?.WaitForExit();
+        Launch();
 
         var process = Retry.WhileNull(() => Process.GetProcessesByName("CoffeeFilter").FirstOrDefault(), TimeSpan.FromSeconds(20)).Result
             ?? throw new InvalidOperationException("Coffee Filter didn't start.");
-        _app   = Application.Attach(process);
-        // By name: the tray flyout is a window of its own
-        Window = Retry.WhileNull(() => _app.GetAllTopLevelWindows(_automation).FirstOrDefault(w => w.Name == "Coffee Filter"), TimeSpan.FromSeconds(20)).Result
-            ?? throw new InvalidOperationException("Coffee Filter's window didn't open.");
+        _app = Application.Attach(process);
+
+        // By name: the tray flyout is a window of its own. Started fresh, it opens in the tray
+        // (unless Show window at launch is on), so open it again for the window
+        Window? MainWindow(TimeSpan wait) =>
+            Retry.WhileNull(() => _app.GetAllTopLevelWindows(_automation).FirstOrDefault(w => w.Name == "Coffee Filter"), wait).Result;
+        var window = MainWindow(TimeSpan.FromSeconds(5));
+        if (window is null)
+        {
+            Launch();
+            window = MainWindow(TimeSpan.FromSeconds(20));
+        }
+        Window = window ?? throw new InvalidOperationException("Coffee Filter's window didn't open.");
 
         // Wait for the filter lists to load (the main page shows its sections then)
         Retry.WhileNull(() => Window.FindFirstDescendant(c => c.ByName("Protection")), TimeSpan.FromSeconds(60), throwOnTimeout: true);
@@ -86,6 +97,22 @@ public sealed class AppFixture : IDisposable
         }
         Thread.Sleep(400);
         return expander;
+    }
+
+    /// <summary>
+    /// The app's saved settings (app.json). The app swaps in a new file when a setting
+    /// changes; read without blocking the swap, and try again if it lands in the middle of one.
+    /// </summary>
+    public static JsonDocument ReadAppSettings()
+    {
+        var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoffeeFilter", "app.json");
+        var text = Retry.WhileException(() =>
+        {
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }, TimeSpan.FromSeconds(2), throwOnTimeout: true).Result!;
+        return JsonDocument.Parse(text);
     }
 
     /// <summary>

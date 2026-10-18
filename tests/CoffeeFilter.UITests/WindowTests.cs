@@ -23,10 +23,39 @@ public sealed class WindowTests(AppFixture app)
         {
             Assert.NotNull(app.Find(section));
         }
-        foreach (var card in new[] { "Ad blocking", "Certificate", "Connection problems", "Update lists", "Add a filter list", "Show tray icon", "Use tray flyout", "Start with Windows", "Quit Coffee Filter" })
+        foreach (var card in new[] { "Ad blocking", "Certificate", "Connection problems", "Update lists", "Add a filter list", "Show tray icon", "Use tray flyout", "Show window at launch", "Start with Windows", "Quit Coffee Filter" })
         {
             Assert.NotNull(app.Find(card));
         }
+    }
+
+    [Fact]
+    public void ShowWindowAtLaunchIsSaved()
+    {
+        app.GoHome();
+        var toggle = Retry.WhileNull(() => app.Window.FindAllDescendants(c => c.ByName("Show window at launch")).FirstOrDefault(e => e.Patterns.Toggle.IsSupported), TimeSpan.FromSeconds(5)).Result
+            ?? throw new InvalidOperationException("No Show window at launch switch.");
+        bool Saved()
+        {
+            using var json = AppFixture.ReadAppSettings();
+            return json.RootElement.TryGetProperty("ShowWindowAtLaunch", out var on) && on.GetBoolean();
+        }
+        var before = toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On;
+        Assert.Equal(before, Saved());
+        try
+        {
+            toggle.Patterns.Toggle.Pattern.Toggle();
+            Assert.True(Retry.WhileFalse(() => Saved() != before, TimeSpan.FromSeconds(3)).Success, "the switch wasn't saved");
+        }
+        finally
+        {
+            // Back the way it was
+            if ((toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On) != before)
+            {
+                toggle.Patterns.Toggle.Pattern.Toggle();
+            }
+        }
+        Assert.True(Retry.WhileFalse(() => Saved() == before, TimeSpan.FromSeconds(3)).Success, "the switch wasn't put back");
     }
 
     [Fact]

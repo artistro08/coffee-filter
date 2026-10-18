@@ -58,26 +58,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let list = |name: &str, url: &str| FilterList {
-            name:    name.into(),
-            url:     url.into(),
-            enabled: true,
-            kind:    "general".into(),
-            trusted: false,
-        };
-
         Self {
             port:       18228,
-            lists:      vec![
-                list("EasyList", "https://easylist.to/easylist/easylist.txt"),
-                list("EasyPrivacy", "https://easylist.to/easylist/easyprivacy.txt"),
-                list("uBlock filters", "https://ublockorigin.github.io/uAssets/filters/filters.txt"),
-                list("uBlock filters - Privacy", "https://ublockorigin.github.io/uAssets/filters/privacy.txt"),
-                list(
-                    "Peter Lowe's List",
-                    "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext",
-                ),
-            ],
+            // The lists a new install starts with, grouped by kind; the rest are there to turn on
+            lists:      serde_json::from_str(include_str!("default_lists.json")).expect("default_lists.json is valid"),
             exclusions: vec![],
             userscripts: vec![],
             excluded_apps: vec![],
@@ -151,6 +135,16 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"second");
         assert!(!path.with_extension("tmp").exists());
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn default_lists_are_https_and_unique() {
+        let lists = Config::default().lists;
+        assert!(lists.iter().any(|l| l.enabled), "a new install blocks something");
+        for list in &lists {
+            assert!(list.url.starts_with("https://"), "{} isn't https", list.name);
+            assert_eq!(lists.iter().filter(|l| l.name == list.name || l.url == list.url).count(), 1, "{} is listed twice", list.name);
+        }
     }
 
     #[test]

@@ -19,6 +19,11 @@ public class AppSettings
     public bool UseFlyout { get; set; } = true;
 
     /// <summary>
+    /// Whether opening the app shows the window; off starts it in the tray.
+    /// </summary>
+    public bool ShowWindowAtLaunch { get; set; }
+
+    /// <summary>
     /// Whether blocking was on when last changed, so the next launch starts the same way.
     /// </summary>
     public bool BlockingEnabled { get; set; } = true;

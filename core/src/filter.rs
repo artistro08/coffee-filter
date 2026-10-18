@@ -120,8 +120,12 @@ fn cache_path(list: &FilterList) -> io::Result<PathBuf> {
     Ok(dir.join(format!("{name}-{}.txt", &hash[..8])))
 }
 
-/// Fetch one URL with a size cap.
+/// Fetch one URL with a size cap. https only (redirects too, see `client`), so a list or
+/// script can't be swapped on the way, even one saved by hand in config.json.
 pub async fn fetch(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    if reqwest::Url::parse(url).map_or(true, |u| u.scheme() != "https") {
+        return Err("only https:// addresses can be downloaded".into());
+    }
     let mut response = client.get(url).send().await?.error_for_status()?;
     if response.content_length().is_some_and(|len| len as usize > max) {
         return Err("file is too large".into());
@@ -712,6 +716,15 @@ impl HttpHandler for Blocker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fetch_refuses_plain_http() {
+        let client = client().unwrap();
+        for url in ["http://example.com/list.txt", "HTTP://example.com", "file:///C:/secret.txt", "not a url"] {
+            let error = fetch(&client, url, 1024).await.unwrap_err();
+            assert!(error.to_string().contains("only https://"), "{url}: {error}");
+        }
+    }
 
     #[test]
     fn blocks_listed_and_passes_clean() {

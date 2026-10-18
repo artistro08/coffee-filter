@@ -105,12 +105,13 @@ public partial class App : Application
         Shortcuts.SessionEnding  += OnSessionEnding;
         Shortcuts.Apply(Settings);
 
-        // Started at sign-in: stay in the tray, no window
+        // Opens in the tray with no window, unless a link asked for a page, you turned on Show
+        // window at launch, or there's no tray icon to open it from (never at sign-in)
         var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
         var atSignIn   = activation.Kind == ExtendedActivationKind.StartupTask;
         var link       = ReadLink(activation);
         _skipCertSetup = link is not null || atSignIn;
-        if (!atSignIn)
+        if (link is not null || (!atSignIn && (Settings.ShowWindowAtLaunch || !Settings.ShowTrayIcon)))
         {
             Activate(link);
         }

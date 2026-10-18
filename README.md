@@ -27,7 +27,7 @@ Some ads (like Reddit's promoted posts) are part of the page itself, so there's 
 - **Hide rules** (`##`) become CSS.
 - **Style and advanced rules** (`#$#`, `:style()`, `:has-text()`, `:upward()`, `:xpath()`, `:remove()`, ...) run in a small script.
 - **Scriptlets** (`##+js(...)` and AdGuard's `#%#//scriptlet(...)`) come from [AdGuard's scriptlet library](https://github.com/AdguardTeam/Scriptlets), pinned to v2.5.1 and its SHA-256, so a changed or tampered download is refused.
-- **`trusted-*` scriptlets** only run for lists with `"trusted": true` in `config.json`. Lists you add in the app aren't trusted; set the flag by hand only for lists you trust (if you copy Zen's lists over, keep Zen's trusted flags, which mark the AdGuard lists).
+- **`trusted-*` scriptlets** only run for lists with `"trusted": true` in `config.json`. The AdGuard lists Coffee Filter starts with are trusted, like in Zen. Lists you add in the app aren't trusted; set the flag by hand only for lists you trust (if you copy Zen's lists over, keep Zen's trusted flags, which mark the AdGuard lists).
 - If a site's Content-Security-Policy would block inline code, a fresh nonce is added for these two tags only.
 
 > AdGuard rules that run raw JavaScript (`#%#` without `//scriptlet`) are skipped on purpose. They're arbitrary code from a list.
@@ -155,10 +155,11 @@ dotnet test
 
 ### Use
 
-1. Open Coffee Filter. On first launch it asks for admin to install its certificate; say **Yes**. (If you said no, click **Install** on the Certificate card.)
-2. Turn on **Ad blocking**.
+1. Open Coffee Filter. It starts in the tray; on first launch it asks for admin to install its certificate; say **Yes**.
+2. Click the tray icon and **Settings** (or open Coffee Filter again) for the window. If you said no to the certificate, click **Install** on the Certificate card.
+3. Turn on **Ad blocking**. It comes with lists for ads, privacy, malware, and more turned on, and regional and digital wellbeing lists ready to turn on.
 
-That's it! Closing the window keeps blocking running in the background, with a tray icon (you can hide it in **App** settings). Coffee Filter starts with Windows in the tray, and blocking comes back on unless you turned it off last time; turn **Start with Windows** off in **App** settings if you'd rather open it yourself. When Windows shuts down or restarts, Coffee Filter puts your proxy settings back first. Opening Coffee Filter again brings the window back. **Quit** stops blocking and puts your proxy settings back.
+That's it! Closing the window keeps blocking running in the background, with a tray icon (you can hide it in **App** settings). Want the window every time you open Coffee Filter? Turn on **Show window at launch** in **App** settings (with the tray icon hidden, the window always opens). Coffee Filter starts with Windows in the tray, and blocking comes back on unless you turned it off last time; turn **Start with Windows** off in **App** settings if you'd rather open it yourself. When Windows shuts down or restarts, Coffee Filter puts your proxy settings back first. Opening Coffee Filter again brings the window back. **Quit** stops blocking and puts your proxy settings back.
 
 ## Known Limits
 
@@ -207,7 +208,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - `%LOCALAPPDATA%\CoffeeFilter\engine.dat`, `engine.key` — saved compiled filter engine
 - `%LOCALAPPDATA%\CoffeeFilter\proxy-backup.json` — your proxy settings while blocking is on
 - `%LOCALAPPDATA%\CoffeeFilter\problems.json` — connections Coffee Filter broke, for troubleshooting
-- `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, blocking on or off, shortcuts, certificate setup version)
+- `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, flyout, window at launch, blocking on or off, shortcuts, certificate setup version)
 - `%LOCALAPPDATA%\CoffeeFilter\app-errors.log` — app errors, if any
 
 ## License
