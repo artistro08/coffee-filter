@@ -29,6 +29,11 @@ public sealed partial class FlyoutWindow : Window
     /// </summary>
     private const long FocusGraceMs = 300;
 
+    /// <summary>
+    /// How long a success message stays in the flyout before it goes away. Errors stay.
+    /// </summary>
+    private static readonly TimeSpan MessageDuration = TimeSpan.FromSeconds(4);
+
     // Fluent motion: https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing
     private static readonly TimeSpan EnterDuration = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ExitDuration  = TimeSpan.FromMilliseconds(167);
@@ -47,6 +52,7 @@ public sealed partial class FlyoutWindow : Window
     private (int Left, int Top, int Right, int Bottom) _clip;
     private CompositionScopedBatch? _slide;
     private Storyboard? _resize;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _messageTimer;
 
     public FlyoutWindow()
     {
@@ -87,6 +93,12 @@ public sealed partial class FlyoutWindow : Window
         };
         WindowRoot.KeyboardAccelerators.Add(escape);
         WindowRoot.KeyboardAcceleratorPlacementMode = KeyboardAcceleratorPlacementMode.Hidden;
+
+        // Success Message Auto Hide
+        _messageTimer             = DispatcherQueue.CreateTimer();
+        _messageTimer.Interval    = MessageDuration;
+        _messageTimer.IsRepeating = false;
+        _messageTimer.Tick       += (_, _) => HideMessage();
 
         // Bind to Event Listeners
         // Live resize: the panel's height animates to the content's, and the region follows the
@@ -276,7 +288,7 @@ public sealed partial class FlyoutWindow : Window
         SaveSiteButton.IsEnabled = false;
         AddSiteRing.IsActive     = true;
         AddSiteRing.Visibility   = Visibility.Visible;
-        Message.Visibility       = Visibility.Collapsed;
+        HideMessage();
         try
         {
             var reply = await _app.RunAsync("add_exclusion", new System.Text.Json.Nodes.JsonObject { ["host"] = host }, showErrors: false, lists: true);
@@ -304,6 +316,7 @@ public sealed partial class FlyoutWindow : Window
         {
             return;
         }
+        HideMessage();
         var reply = await _app.RunAsync(BlockingSwitch.IsOn ? "start" : "stop", showErrors: false);
         if (reply is not { Ok: true })
         {
@@ -316,7 +329,7 @@ public sealed partial class FlyoutWindow : Window
         UpdateButton.IsEnabled  = false;
         UpdateRing.IsActive     = true;
         UpdateRing.Visibility   = Visibility.Visible;
-        Message.Visibility      = Visibility.Collapsed;
+        HideMessage();
         try
         {
             var reply = await _app.RunAsync("update_lists", showErrors: false, lists: true);
@@ -337,11 +350,32 @@ public sealed partial class FlyoutWindow : Window
         }
     }
 
+    /// <summary>
+    /// Shows a line under the controls. A success message goes away on its own after
+    /// <see cref="MessageDuration"/>, and one that arrives after the flyout closed is dropped;
+    /// an error stays until the next action or close, so one that arrives while closed shows next time.
+    /// </summary>
     private void ShowMessage(string text, bool error)
     {
+        if (!_isOpen && !error)
+        {
+            return;
+        }
+        _messageTimer.Stop();
         Message.Text       = text;
         Message.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[error ? "SystemFillColorCriticalBrush" : "TextFillColorSecondaryBrush"];
         Message.Visibility = Visibility.Visible;
+        if (error)
+        {
+            return;
+        }
+        _messageTimer.Start();
+    }
+
+    private void HideMessage()
+    {
+        _messageTimer.Stop();
+        Message.Visibility = Visibility.Collapsed;
     }
 
     private void OnSettingsClicked(object sender, RoutedEventArgs e)
@@ -488,6 +522,9 @@ public sealed partial class FlyoutWindow : Window
             {
                 return;
             }
+            // Reopening starts clean, without the last action's message; cleared while the
+            // window still lays out, so the next open measures the panel without it
+            HideMessage();
             AppWindow.Hide();
             _app.SetBackground(true);
         };
