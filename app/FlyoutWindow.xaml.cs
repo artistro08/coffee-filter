@@ -29,6 +29,11 @@ public sealed partial class FlyoutWindow : Window
     /// </summary>
     private const long FocusGraceMs = 300;
 
+    /// <summary>
+    /// How long a success message stays in the flyout before it goes away. Errors stay.
+    /// </summary>
+    private static readonly TimeSpan MessageDuration = TimeSpan.FromSeconds(4);
+
     // Fluent motion: https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing
     private static readonly TimeSpan EnterDuration = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ExitDuration  = TimeSpan.FromMilliseconds(167);
@@ -47,6 +52,7 @@ public sealed partial class FlyoutWindow : Window
     private (int Left, int Top, int Right, int Bottom) _clip;
     private CompositionScopedBatch? _slide;
     private Storyboard? _resize;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _messageTimer;
 
     public FlyoutWindow()
     {
@@ -276,7 +282,7 @@ public sealed partial class FlyoutWindow : Window
         SaveSiteButton.IsEnabled = false;
         AddSiteRing.IsActive     = true;
         AddSiteRing.Visibility   = Visibility.Visible;
-        Message.Visibility       = Visibility.Collapsed;
+        HideMessage();
         try
         {
             var reply = await _app.RunAsync("add_exclusion", new System.Text.Json.Nodes.JsonObject { ["host"] = host }, showErrors: false, lists: true);
@@ -316,7 +322,7 @@ public sealed partial class FlyoutWindow : Window
         UpdateButton.IsEnabled  = false;
         UpdateRing.IsActive     = true;
         UpdateRing.Visibility   = Visibility.Visible;
-        Message.Visibility      = Visibility.Collapsed;
+        HideMessage();
         try
         {
             var reply = await _app.RunAsync("update_lists", showErrors: false, lists: true);
@@ -337,11 +343,36 @@ public sealed partial class FlyoutWindow : Window
         }
     }
 
+    /// <summary>
+    /// Shows a line under the controls. A success message goes away on its own after
+    /// <see cref="MessageDuration"/>; an error stays until the next action or close.
+    /// </summary>
     private void ShowMessage(string text, bool error)
     {
+        _messageTimer?.Stop();
         Message.Text       = text;
         Message.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[error ? "SystemFillColorCriticalBrush" : "TextFillColorSecondaryBrush"];
         Message.Visibility = Visibility.Visible;
+        if (error)
+        {
+            return;
+        }
+
+        // Auto Hide
+        if (_messageTimer is null)
+        {
+            _messageTimer             = DispatcherQueue.CreateTimer();
+            _messageTimer.Interval    = MessageDuration;
+            _messageTimer.IsRepeating = false;
+            _messageTimer.Tick       += (_, _) => HideMessage();
+        }
+        _messageTimer.Start();
+    }
+
+    private void HideMessage()
+    {
+        _messageTimer?.Stop();
+        Message.Visibility = Visibility.Collapsed;
     }
 
     private void OnSettingsClicked(object sender, RoutedEventArgs e)
@@ -490,6 +521,9 @@ public sealed partial class FlyoutWindow : Window
             }
             AppWindow.Hide();
             _app.SetBackground(true);
+
+            // Reopening starts clean, without the last action's message
+            HideMessage();
         };
     }
 }

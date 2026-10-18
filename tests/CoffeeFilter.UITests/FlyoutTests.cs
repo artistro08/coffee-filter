@@ -9,7 +9,8 @@ namespace CoffeeFilter.UITests;
 
 /// <summary>
 /// The tray flyout, opened with its global shortcut the way a person would, and the Keyboard
-/// shortcuts settings. Nothing is changed: the picker is canceled, the flyout's switch isn't touched.
+/// shortcuts settings. Nothing is changed: the picker is canceled, the flyout's switch isn't touched
+/// (Update now only updates the lists).
 /// </summary>
 [Collection("App")]
 public sealed class FlyoutTests(AppFixture app)
@@ -100,6 +101,22 @@ public sealed class FlyoutTests(AppFixture app)
         Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Site to exclude")), TimeSpan.FromSeconds(3));
         Keyboard.Type(VirtualKeyShort.ESCAPE);
         Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Site to exclude")), TimeSpan.FromSeconds(3)).Success, "Esc didn't close the box");
+        Assert.NotNull(FindFlyout());
+
+        Keyboard.Type(VirtualKeyShort.ESCAPE);
+        Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
+    public void UpdateListsMessageGoesAwayOnItsOwn()
+    {
+        var flyout = OpenFlyout();
+        flyout.FindFirstDescendant(c => c.ByName("Update now").And(c.ByControlType(ControlType.Button))).Patterns.Invoke.Pattern.Invoke();
+
+        // Shows once the lists are updated, then goes away a few seconds later
+        var message = Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Lists are up to date.")), TimeSpan.FromSeconds(120)).Result;
+        Assert.NotNull(message);
+        Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Lists are up to date.")), TimeSpan.FromSeconds(8)).Success, "the message didn't go away");
         Assert.NotNull(FindFlyout());
 
         Keyboard.Type(VirtualKeyShort.ESCAPE);
