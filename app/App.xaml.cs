@@ -421,6 +421,15 @@ public partial class App : Application
         _window.Activate();
     }
 
+    /// <summary>
+    /// Add app, chosen in the tray flyout: the window, with the program or Store app picker.
+    /// </summary>
+    public void PickExcludedApp(bool store)
+    {
+        ShowWindow();
+        _ = _window!.PickExcludedAppAsync(store);
+    }
+
     [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static partial bool K32EmptyWorkingSet(nint process);

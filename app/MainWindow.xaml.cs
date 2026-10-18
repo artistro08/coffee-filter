@@ -43,6 +43,12 @@ public sealed partial class MainWindow : Window
     private bool _updating;
 
     /// <summary>
+    /// A program or Store app picker is open. Only one can be at a time: a second Store app
+    /// dialog would fail, and a second file picker would stack on the first.
+    /// </summary>
+    private bool _pickingApp;
+
+    /// <summary>
     /// Most log entries kept on screen.
     /// </summary>
     private const int LogMax = 200;
@@ -748,6 +754,31 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Add app from the tray flyout: the main page, Excluded apps opened, and the picker.
+    /// </summary>
+    public async Task PickExcludedAppAsync(bool store)
+    {
+        // Just opened, the window may still be loading; a minimized one comes back
+        if (Content is FrameworkElement { IsLoaded: false } root)
+        {
+            var loaded = new TaskCompletionSource();
+            root.Loaded += (_, _) => loaded.TrySetResult();
+            await loaded.Task;
+        }
+        BringToFront();
+
+        // A picker already open (asked for twice from the flyout) stays the one on screen
+        if (_pickingApp)
+        {
+            return;
+        }
+        GoBack();
+        ExcludedAppsCard.IsExpanded = true;
+        ExcludedAppsCard.StartBringIntoView();
+        await (store ? PickStoreAppAsync() : PickProgramAsync());
+    }
+
     private async Task AddExcludedAppAsync(string name, string? path, string? package)
     {
         ExcludedAppsCard.IsExpanded = true;
@@ -757,8 +788,16 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// Pick a program file. Its name comes from the file's own description (what Task Manager shows).
     /// </summary>
-    private async void OnAddProgramClicked(object sender, RoutedEventArgs e)
+    private async void OnAddProgramClicked(object sender, RoutedEventArgs e) => await PickProgramAsync();
+
+    private async Task PickProgramAsync()
     {
+        if (_pickingApp)
+        {
+            return;
+        }
+        _pickingApp = true;
+
         // An error here must not close the app (that would stop blocking)
         try
         {
@@ -783,6 +822,10 @@ public sealed partial class MainWindow : Window
             App.LogError(ex);
             ShowError(ex.Message);
         }
+        finally
+        {
+            _pickingApp = false;
+        }
     }
 
     /// <summary>
@@ -794,8 +837,15 @@ public sealed partial class MainWindow : Window
     /// Each app's row is built once in code and added to the list as is: list items made from
     /// data (templates, bound or plain names) came out blank or crashed in the AOT build.
     /// </summary>
-    private async void OnAddStoreAppClicked(object sender, RoutedEventArgs e)
+    private async void OnAddStoreAppClicked(object sender, RoutedEventArgs e) => await PickStoreAppAsync();
+
+    private async Task PickStoreAppAsync()
     {
+        if (_pickingApp)
+        {
+            return;
+        }
+
         var search  = new TextBox { PlaceholderText = "Search apps", IsEnabled = false };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(search, "Search apps");
         var loading = new ProgressRing { IsActive = true, Width = 32, Height = 32, Margin = new Thickness(0, 48, 0, 48) };
@@ -881,6 +931,7 @@ public sealed partial class MainWindow : Window
         search.TextChanged += (_, _) => Show(search.Text);
 
         // Only one dialog can be open at a time
+        _pickingApp = true;
         try
         {
             if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary || chosen is null)
@@ -893,6 +944,10 @@ public sealed partial class MainWindow : Window
         {
             App.LogError(ex);
             ShowError(ex.Message);
+        }
+        finally
+        {
+            _pickingApp = false;
         }
     }
 
@@ -1027,7 +1082,8 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// Bring the window in front of the browser. Windows normally won't let a background app
     /// take the front, so briefly share input with the window that's in front, which lets it.
-    /// Only used when the user asked for this window (an Install or Exclude button on a web page).
+    /// Only used when the user asked for this window (an Install or Exclude button on a web page,
+    /// or Add app in the tray flyout).
     /// </summary>
     private void BringToFront()
     {

@@ -47,7 +47,7 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 
 ### Tray Flyout and Shortcuts
 
-Click the tray icon (or press **Win+Alt+C**) for a small flyout with the **Ad blocking** switch, **Update lists**, **Excluded sites** (type a site and press **Add** to exclude it), and a **Settings** button that opens the window. It slides out of the taskbar wherever your taskbar is, like Windows' own flyouts. Right-click the icon for **Open**, **Ad blocking**, and **Quit**. Rather skip the flyout? Turn off **Use tray flyout** under **App**, and the icon and shortcut open the window instead.
+Click the tray icon (or press **Win+Alt+C**) for a small flyout with the **Ad blocking** switch, **Update lists**, **Excluded sites** (type a site and press **Add** to exclude it), and a **Settings** button that opens the window. **Excluded apps** shows how many apps you've excluded, and **Add app** opens the window with the program or Store app picker. It slides out of the taskbar wherever your taskbar is, like Windows' own flyouts. Right-click the icon for **Open**, **Ad blocking**, and **Quit**. Rather skip the flyout? Turn off **Use tray flyout** under **App**, and the icon and shortcut open the window instead.
 
 Under **Shortcuts**, you can set keyboard shortcuts that work anywhere in Windows: open the flyout, turn ad blocking on or off, update filter lists, and open Coffee Filter. Click a shortcut and press the keys you want. If Windows or another app already uses them, Coffee Filter says so.
 
