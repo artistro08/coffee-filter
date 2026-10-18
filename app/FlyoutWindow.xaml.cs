@@ -10,7 +10,7 @@ using Windows.Graphics;
 namespace CoffeeFilter;
 
 /// <summary>
-/// The tray flyout: Ad blocking, Update lists, Excluded sites, and Settings, in an acrylic panel that slides
+/// The tray flyout: Ad blocking, Update lists, Excluded sites and apps, and Settings, in an acrylic panel that slides
 /// out of the taskbar on whichever edge it's docked. Built the way MagicBuds (and Battery
 /// Flyout) build theirs: a borderless, always-on-top, see-through window sits flush on the
 /// taskbar edge, as tall as the work area and one margin wider than the panel. Only the panel
@@ -73,7 +73,8 @@ public sealed partial class FlyoutWindow : Window
         _panelVisual = ElementCompositionPreview.GetElementVisual(SlideHost);
         _compositor  = _panelVisual.Compositor;
 
-        // Esc closes it, like Windows' own flyouts; with the Add site box open, just the box
+        // Esc closes it, like Windows' own flyouts; with the Add site box or Add app choices
+        // open, just those
         var escape = new KeyboardAccelerator { Key = Windows.System.VirtualKey.Escape };
         escape.Invoked += (_, e) =>
         {
@@ -81,6 +82,11 @@ public sealed partial class FlyoutWindow : Window
             if (AddSitePanel.Visibility == Visibility.Visible)
             {
                 ShowAddSite(false);
+                return;
+            }
+            if (AddAppPanel.Visibility == Visibility.Visible)
+            {
+                ShowAddApp(false);
                 return;
             }
             HideFlyout();
@@ -229,6 +235,12 @@ public sealed partial class FlyoutWindow : Window
             1 => "1 site",
             var n => $"{n} sites",
         };
+        AppsText.Text            = s.ExcludedApps.Count switch
+        {
+            0 => "None yet",
+            1 => "1 app",
+            var n => $"{n} apps",
+        };
     }
 
     private void OnAddSiteClicked(object sender, RoutedEventArgs e) => ShowAddSite(AddSitePanel.Visibility == Visibility.Collapsed);
@@ -248,6 +260,36 @@ public sealed partial class FlyoutWindow : Window
         }
         SiteBox.Text = "";
         AddSiteButton.Focus(FocusState.Programmatic);
+    }
+
+    private void OnAddAppClicked(object sender, RoutedEventArgs e) => ShowAddApp(AddAppPanel.Visibility == Visibility.Collapsed);
+
+    /// <summary>
+    /// Opens or closes the choice of a program or a Store app; while it's open, Add app turns
+    /// into Cancel, like Add site.
+    /// </summary>
+    private void ShowAddApp(bool open)
+    {
+        AddAppPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        AddAppButton.Content   = open ? "Cancel" : "Add app";
+        (open ? AddProgramButton : AddAppButton).Focus(FocusState.Programmatic);
+    }
+
+    private void OnAddProgramClicked(object sender, RoutedEventArgs e) => PickApp(store: false);
+
+    private void OnAddStoreAppClicked(object sender, RoutedEventArgs e) => PickApp(store: true);
+
+    /// <summary>
+    /// The file picker and the Store app list take focus, which would close the flyout under
+    /// them, so they open in the window instead.
+    /// </summary>
+    private void PickApp(bool store)
+    {
+        ShowAddApp(false);
+
+        // Window first, while the flyout still has the foreground to pass on (see OnSettingsClicked)
+        _app.PickExcludedApp(store);
+        HideFlyout();
     }
 
     private async void OnSiteBoxKeyDown(object sender, KeyRoutedEventArgs e)

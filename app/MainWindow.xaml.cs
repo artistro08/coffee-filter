@@ -747,6 +747,29 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Add app from the tray flyout: the main page, Excluded apps opened, and the picker.
+    /// </summary>
+    public async Task PickExcludedAppAsync(bool store)
+    {
+        // Just opened, the window may still be loading
+        if (Content is FrameworkElement { IsLoaded: false } root)
+        {
+            var loaded = new TaskCompletionSource();
+            root.Loaded += (_, _) => loaded.TrySetResult();
+            await loaded.Task;
+        }
+        GoBack();
+        ExcludedAppsCard.IsExpanded = true;
+        ExcludedAppsCard.StartBringIntoView();
+        if (store)
+        {
+            OnAddStoreAppClicked(this, new RoutedEventArgs());
+            return;
+        }
+        OnAddProgramClicked(this, new RoutedEventArgs());
+    }
+
     private async Task AddExcludedAppAsync(string name, string? path, string? package)
     {
         ExcludedAppsCard.IsExpanded = true;

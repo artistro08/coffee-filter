@@ -9,7 +9,7 @@ namespace CoffeeFilter.UITests;
 
 /// <summary>
 /// The tray flyout, opened with its global shortcut the way a person would, and the Keyboard
-/// shortcuts settings. Nothing is changed: the picker is canceled, the flyout's switch isn't touched.
+/// shortcuts settings. Nothing is changed: the pickers are canceled, the flyout's switch isn't touched.
 /// </summary>
 [Collection("App")]
 public sealed class FlyoutTests(AppFixture app)
@@ -107,6 +107,29 @@ public sealed class FlyoutTests(AppFixture app)
     }
 
     [Fact]
+    public void AddAppOpensTheStoreAppPickerInTheWindow()
+    {
+        var flyout = OpenFlyout();
+        Assert.NotNull(flyout.FindFirstDescendant(c => c.ByName("Excluded apps")));
+        AddAppButton(flyout).Patterns.Invoke.Pattern.Invoke();
+
+        // Both choices show; Esc closes only them
+        Assert.NotNull(Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Program…").And(c.ByControlType(ControlType.Button))), TimeSpan.FromSeconds(3)).Result);
+        Assert.NotNull(flyout.FindFirstDescendant(c => c.ByName("Store app…").And(c.ByControlType(ControlType.Button))));
+        Keyboard.Type(VirtualKeyShort.ESCAPE);
+        Assert.True(Retry.WhileNotNull(() => flyout.FindFirstDescendant(c => c.ByName("Store app…")), TimeSpan.FromSeconds(3)).Success, "Esc didn't close the choices");
+        Assert.NotNull(FindFlyout());
+
+        // Store app closes the flyout and opens the picker in the window; canceled, so nothing is excluded
+        AddAppButton(flyout).Patterns.Invoke.Pattern.Invoke();
+        Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Store app…")), TimeSpan.FromSeconds(3)).Result!.Patterns.Invoke.Pattern.Invoke();
+        Assert.True(Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3)).Success, "the flyout didn't close");
+        Assert.NotNull(Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByName("Exclude a Microsoft Store app")), TimeSpan.FromSeconds(10)).Result);
+        app.Window.FindFirstDescendant(c => c.ByName("Cancel").And(c.ByControlType(ControlType.Button))).Patterns.Invoke.Pattern.Invoke();
+        Assert.True(Retry.WhileNotNull(() => app.Window.FindFirstDescendant(c => c.ByName("Exclude a Microsoft Store app")), TimeSpan.FromSeconds(5)).Success, "the picker didn't close");
+    }
+
+    [Fact]
     public void EscClosesTheFlyout()
     {
         OpenFlyout();
@@ -153,6 +176,9 @@ public sealed class FlyoutTests(AppFixture app)
         return Retry.WhileNull(FindFlyout, TimeSpan.FromSeconds(5)).Result
             ?? throw new InvalidOperationException($"{text} didn't open the flyout.");
     }
+
+    private static AutomationElement AddAppButton(AutomationElement flyout) =>
+        flyout.FindFirstDescendant(c => c.ByName("Add app").And(c.ByControlType(ControlType.Button)));
 
     /// <summary>
     /// A shortcut's picker button, by its automation ID ("Shortcut" and the action).
