@@ -55,10 +55,6 @@ public sealed partial class TransparentBackdrop : SystemBackdrop
         disconnectedTarget.SystemBackdrop = null;
         brush?.Dispose();
 
-        // The flyout's window is closed for good when it's turned off; a new one makes its own
-        _compositor?.Dispose();
-        _compositor = null;
-
         base.OnTargetDisconnected(disconnectedTarget);
     }
 }
@@ -204,12 +200,6 @@ public static unsafe partial class PopupWindow
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static nint SubclassProc(nint hwnd, uint message, nint wParam, nint lParam, nuint id, nuint data)
     {
-        // The window is being destroyed (the flyout was turned off): unhook before it's gone
-        if (message == WmNcDestroy)
-        {
-            _ = RemoveWindowSubclass(hwnd, &SubclassProc, id);
-            return DefSubclassProc(hwnd, message, wParam, lParam);
-        }
         if (id == 1 && message == WmEraseBkgnd && GetClientRect(hwnd, out var rect))
         {
             _ = FillRect(wParam, rect, GetStockObject(BlackBrush));
@@ -236,7 +226,6 @@ public static unsafe partial class PopupWindow
     private const uint WsFrameBits                 = 0x00800000 | 0x00400000 | 0x00040000;
     private const uint WmStyleChanging             = 0x007C;
     private const uint WmEraseBkgnd                = 0x0014;
-    private const uint WmNcDestroy                 = 0x0082;
     private const uint SwpNoSize                   = 0x0001;
     private const uint SwpNoMove                   = 0x0002;
     private const uint SwpNoZOrder                 = 0x0004;
@@ -372,10 +361,6 @@ public static unsafe partial class PopupWindow
     [LibraryImport("comctl32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetWindowSubclass(nint hwnd, delegate* unmanaged[Stdcall]<nint, uint, nint, nint, nuint, nuint, nint> proc, nuint id, nuint data);
-
-    [LibraryImport("comctl32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool RemoveWindowSubclass(nint hwnd, delegate* unmanaged[Stdcall]<nint, uint, nint, nint, nuint, nuint, nint> proc, nuint id);
 
     [LibraryImport("comctl32.dll")]
     private static partial nint DefSubclassProc(nint hwnd, uint message, nint wParam, nint lParam);

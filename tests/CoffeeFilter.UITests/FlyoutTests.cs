@@ -159,7 +159,13 @@ public sealed class FlyoutTests(AppFixture app)
         }
         Assert.Equal(ToggleState.On, toggle.Patterns.Toggle.Pattern.ToggleState.Value);
 
-        // And the flyout opens again
+        // And the flyout opens again, still works, and the app doesn't crash a moment later
+        // (WinUI crashed when a new flyout was made after closing the old one)
+        OpenFlyout();
+        Keyboard.Type(VirtualKeyShort.ESCAPE);
+        Assert.True(Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3)).Success, "Esc didn't close the reopened flyout");
+        Thread.Sleep(3000);
+        Assert.NotEmpty(System.Diagnostics.Process.GetProcessesByName("CoffeeFilter"));
         OpenFlyout();
         Keyboard.Type(VirtualKeyShort.ESCAPE);
         Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3));

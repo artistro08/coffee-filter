@@ -617,8 +617,8 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Turn the flyout on or off. Off closes it for good, so its window and acrylic stop
-    /// using memory; it's made again on the next open after turning it back on.
+    /// Turn the flyout on or off. Off leaves a flyout that was already made hidden rather than
+    /// closing it: WinUI crashes (in Microsoft.UI.Input) when a new one is made after closing one.
     /// </summary>
     public void SetFlyoutEnabled(bool enabled)
     {
@@ -629,12 +629,6 @@ public partial class App : Application
         }
         Settings.UseFlyout = enabled;
         Settings.Save();
-        if (enabled || _flyout is null)
-        {
-            return;
-        }
-        _flyout.Release();
-        _flyout = null;
     }
 
     /// <summary>

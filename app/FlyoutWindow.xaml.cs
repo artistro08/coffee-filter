@@ -47,7 +47,6 @@ public sealed partial class FlyoutWindow : Window
     private long _hiddenAt;
     private bool _isOpen;
     private bool _updating;
-    private bool _released;
     private TaskbarEdge _edge;
 
     // Current window region in window pixels
@@ -117,11 +116,7 @@ public sealed partial class FlyoutWindow : Window
         _app.Changed             += OnAppChanged;
         AppWindow.Closing        += (_, e) =>
         {
-            // Only Quit, or turning the flyout off, really closes it
-            if (_released)
-            {
-                return;
-            }
+            // Only Quit really closes it
             e.Cancel = true;
             HideFlyout();
         };
@@ -173,15 +168,7 @@ public sealed partial class FlyoutWindow : Window
         var timer = DispatcherQueue.CreateTimer();
         timer.Interval    = TimeSpan.FromMilliseconds(150);
         timer.IsRepeating = false;
-        timer.Tick       += (_, _) =>
-        {
-            // Turned off in the meantime: the window is gone
-            if (_released)
-            {
-                return;
-            }
-            ShowFlyout(atCursor);
-        };
+        timer.Tick       += (_, _) => ShowFlyout(atCursor);
         timer.Start();
     }
 
@@ -203,18 +190,6 @@ public sealed partial class FlyoutWindow : Window
             PopupWindow.FocusTaskbar();
         }
         Slide(HiddenOffset(), ExitDuration, new Vector2(1, 0), new Vector2(1, 1));
-    }
-
-    /// <summary>
-    /// Closes the window for good (the flyout was turned off in Settings).
-    /// </summary>
-    public void Release()
-    {
-        _released    = true;
-        _isOpen      = false;
-        _app.Changed -= OnAppChanged;
-        _messageTimer.Stop();
-        Close();
     }
 
     private void ShowFlyout(bool atCursor)
@@ -605,7 +580,7 @@ public sealed partial class FlyoutWindow : Window
 
         slide.Completed += (_, _) =>
         {
-            if (_slide != slide || _isOpen || _released)
+            if (_slide != slide || _isOpen)
             {
                 return;
             }
