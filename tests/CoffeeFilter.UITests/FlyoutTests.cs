@@ -125,7 +125,7 @@ public sealed class FlyoutTests(AppFixture app)
         Retry.WhileNull(() => flyout.FindFirstDescendant(c => c.ByName("Store app…")), TimeSpan.FromSeconds(3)).Result!.Patterns.Invoke.Pattern.Invoke();
         Assert.True(Retry.WhileNotNull(FindFlyout, TimeSpan.FromSeconds(3)).Success, "the flyout didn't close");
         Assert.NotNull(Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByName("Exclude a Microsoft Store app")), TimeSpan.FromSeconds(10)).Result);
-        app.Window.FindFirstDescendant(c => c.ByName("Cancel").And(c.ByControlType(ControlType.Button))).Patterns.Invoke.Pattern.Invoke();
+        app.FindButton("Cancel").Patterns.Invoke.Pattern.Invoke();
         Assert.True(Retry.WhileNotNull(() => app.Window.FindFirstDescendant(c => c.ByName("Exclude a Microsoft Store app")), TimeSpan.FromSeconds(5)).Success, "the picker didn't close");
     }
 

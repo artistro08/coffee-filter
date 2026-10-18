@@ -243,7 +243,15 @@ public sealed partial class FlyoutWindow : Window
         };
     }
 
-    private void OnAddSiteClicked(object sender, RoutedEventArgs e) => ShowAddSite(AddSitePanel.Visibility == Visibility.Collapsed);
+    private void OnAddSiteClicked(object sender, RoutedEventArgs e)
+    {
+        // One open at a time
+        if (AddAppPanel.Visibility == Visibility.Visible)
+        {
+            ShowAddApp(false);
+        }
+        ShowAddSite(AddSitePanel.Visibility == Visibility.Collapsed);
+    }
 
     /// <summary>
     /// Opens or closes the box for a site to exclude; the panel grows to fit it. While it's
@@ -262,7 +270,15 @@ public sealed partial class FlyoutWindow : Window
         AddSiteButton.Focus(FocusState.Programmatic);
     }
 
-    private void OnAddAppClicked(object sender, RoutedEventArgs e) => ShowAddApp(AddAppPanel.Visibility == Visibility.Collapsed);
+    private void OnAddAppClicked(object sender, RoutedEventArgs e)
+    {
+        // One open at a time
+        if (AddSitePanel.Visibility == Visibility.Visible)
+        {
+            ShowAddSite(false);
+        }
+        ShowAddApp(AddAppPanel.Visibility == Visibility.Collapsed);
+    }
 
     /// <summary>
     /// Opens or closes the choice of a program or a Store app; while it's open, Add app turns
