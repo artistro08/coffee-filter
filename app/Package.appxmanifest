@@ -9,7 +9,7 @@
     xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
     IgnorableNamespaces="uap uap5 rescap desktop6 com desktop">
 
-    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.7.0" />
+    <Identity Name="Artistro08.CoffeeFilter" Publisher="CN=Devin Green" Version="0.1.8.0" />
 
     <Properties>
         <DisplayName>Coffee Filter</DisplayName>

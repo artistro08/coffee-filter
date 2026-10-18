@@ -334,8 +334,9 @@ fn load_cached_engine(key: &str) -> Option<(Engine, usize)> {
 /// Coffee Filter's own fixes, for ads the public lists don't catch yet. Always on.
 ///
 /// X marks promoted posts with a small "Ad" label (the lists still look for "Promoted"), and
-/// keeps ad slots in `placementTracking` cells.
-const BUILTIN_RULES: &str = r#"x.com,twitter.com##div[data-testid="cellInnerDiv"]:has(div[data-testid="placementTracking"])
+/// counts their views with impression pixels. Not `placementTracking` alone: X's video
+/// player uses it too, so posts vanished once their video played.
+const BUILTIN_RULES: &str = r#"x.com,twitter.com##div[data-testid="cellInnerDiv"]:has(div[data-testid$="-impression-pixel"])
 x.com,twitter.com##article[data-testid="tweet"] span:has-text(/^Ad$/):upward(div[data-testid="cellInnerDiv"])
 "#;
 
@@ -373,6 +374,13 @@ fn request_type(dest: Option<&str>) -> &'static str {
         Some("empty") => "xmlhttprequest",
         Some("websocket") => "websocket",
         _ => "other",
+    }
+}
+
+/// Drop "send it only if it changed" headers, so the site answers with the whole page.
+fn remove_conditionals(headers: &mut hudsucker::hyper::HeaderMap) {
+    for name in ["if-none-match", "if-modified-since"] {
+        headers.remove(name);
     }
 }
 
@@ -725,13 +733,20 @@ impl HttpHandler for Blocker {
             .is_ok_and(|r| engine.check_network_request(&r).should_block());
 
         if !block {
-            // Page loads (and frames) get cosmetic filtering on the way back
-            let accepts_html = header("accept").is_some_and(|a| a.contains("text/html"));
-            let page_load    = matches!(kind, "document" | "subdocument") || (header("sec-fetch-dest").is_none() && accepts_html);
+            // Anything that may come back as a page gets cosmetic filtering on the way back (only
+            // HTML with a <head> is changed): page loads and frames, and fetches, like a site's
+            // service worker saving a page that a normal reload then shows
+            let navigation = matches!(kind, "document" | "subdocument");
             if req.method() == Method::GET && kind == "document" && userscripts::is_install_link(req.uri()) {
                 self.install = Some(url.clone());
-            } else if req.method() == Method::GET && page_load {
+            } else if req.method() == Method::GET && (navigation || matches!(kind, "xmlhttprequest" | "other")) {
                 self.page = Some(url.clone());
+            }
+
+            // A page load always gets the whole page, never "not modified", so the browser can't
+            // show a copy it saved before Coffee Filter was on (only Ctrl+Shift+R fixed that)
+            if navigation {
+                remove_conditionals(req.headers_mut());
             }
             self.shared.trace.write(format_args!(
                 "{} {} allowed dest={kind}{}",
@@ -769,6 +784,22 @@ impl HttpHandler for Blocker {
         let engine  = self.shared.engine.read().unwrap().clone();
         let scripts = self.shared.userscripts.read().unwrap().clone();
         cosmetic::inject(res, &engine, &userscripts::for_page(&scripts, &url), &url, &self.shared.trace)
+    }
+
+    /// The site couldn't be reached (or broke off); the browser gets a 502 either way, and the
+    /// detailed log gets the reason.
+    async fn handle_error(&mut self, _ctx: &HttpContext, err: hyper_util::client::legacy::Error) -> Response<Body> {
+        if self.shared.trace.is_on() {
+            let mut why = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(inner) = source {
+                why.push_str(": ");
+                why.push_str(&inner.to_string());
+                source = inner.source();
+            }
+            self.shared.trace.write(format_args!("upstream error {}: {why}", self.page.as_deref().map_or("", without_query)));
+        }
+        Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::empty()).expect("static response")
     }
 
     /// Decrypt only HTTPS on 443 for hosts not excluded; everything else is tunneled untouched.
@@ -905,6 +936,17 @@ mod tests {
     }
 
     #[test]
+    fn page_loads_always_ask_for_the_whole_page() {
+        let mut headers = hudsucker::hyper::HeaderMap::new();
+        headers.insert("if-none-match", "\"abc\"".parse().unwrap());
+        headers.insert("if-modified-since", "Sat, 17 Oct 2026 10:00:00 GMT".parse().unwrap());
+        headers.insert("accept", "text/html".parse().unwrap());
+        remove_conditionals(&mut headers);
+        assert!(!headers.contains_key("if-none-match") && !headers.contains_key("if-modified-since"));
+        assert!(headers.contains_key("accept"), "other headers stay");
+    }
+
+    #[test]
     fn rule_count_skips_comments() {
         let lines = ["! comment", "# hosts comment", "[Adblock Plus 2.0]", "", "example.com##.ad", "##.generic", "example.com#@#.ad", "||ads.com^", "0.0.0.0 x.com"];
         assert_eq!(lines.iter().filter(|l| is_rule(l)).count(), 5);
@@ -967,7 +1009,8 @@ mod tests {
         let engine = Engine::new_with_filter_set(set);
         let found  = engine.url_cosmetic_resources("https://x.com/home");
         let all    = format!("{:?} {:?}", found.hide_selectors, found.procedural_actions);
-        assert!(all.contains("placementTracking") && all.contains("cellInnerDiv"), "{all}");
+        assert!(all.contains("impression-pixel") && all.contains("cellInnerDiv"), "{all}");
+        assert!(!all.contains(r#"cellInnerDiv\"]:has(div[data-testid=\"placementTracking\"])"#), "video posts use placementTracking too: {all}");
     }
 
     #[test]
