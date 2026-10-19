@@ -1,12 +1,12 @@
 # Coffee Filter
 
-A local HTTPS ad blocker for Windows, in the spirit of Zen. A small Rust proxy built on [hudsucker](https://github.com/omjadas/hudsucker) filters every request against EasyList-style lists, and a WinUI 3 app turns it on and off.
+A local HTTPS ad blocker for Windows, in the spirit of [Zen](https://github.com/ZenPrivacy/zen-desktop). A small Rust proxy built on [hudsucker](https://github.com/omjadas/hudsucker) filters every request against EasyList-style lists and connects to sites the way Chrome does, and a WinUI 3 app turns it on and off.
 
 ## Introduction
 
 When blocking is on, Windows sends web traffic through a proxy running on your own PC (`127.0.0.1:18228`). It does that with a PAC script the proxy serves itself: web traffic (`http`/`https`) goes to the proxy, while this PC, your home network, and every other kind of connection go direct. To read HTTPS traffic, the proxy uses a certificate authority (CA) made just for your PC. Requests matching a filter list get a `403` and never reach the ad server.
 
-Filtering uses [adblock-rust](https://github.com/brave/adblock-rust), the engine inside Brave. Lists are shown in groups like Zen's (Ads, Privacy, Malware, General, Digital wellbeing, Regional, Custom) using each list's `kind` in `config.json`. It starts with five general lists, and you can add your own in Adblock Plus or hosts file format (`https://` addresses only, so a list can't be tampered with on the way).
+Filtering uses [adblock-rust](https://github.com/brave/adblock-rust), the engine inside Brave. Lists are shown in groups like Zen's (Ads, Privacy, Malware, General, Digital wellbeing, Regional, Custom) using each list's `kind` in `config.json`. It comes with 60 lists, 15 of them on (ads, privacy, malware, and general), plus regional and digital wellbeing lists ready to turn on. You can add your own in Adblock Plus or hosts file format (`https://` addresses only, so a list can't be tampered with on the way). Only the lists decide what's filtered; Coffee Filter adds no rules of its own.
 
 ### Blocked Pages
 
@@ -57,6 +57,10 @@ You get a notification either way; click it to see the site under **Connection p
 
 Logins, password managers, banks, government sites, and Microsoft and Xbox services (GitHub, Discord, and Slack among them) connect directly, around Coffee Filter, so nothing is blocked there and userscripts don't run there. The list is [Zen's](https://github.com/ZenPrivacy/zen-desktop/tree/master/internal/sysproxy/exclusions), used as is.
 
+### Detailed Logs
+
+Ads still showing somewhere, or a page that won't load? Turn on **Detailed logs** under **App**, try the page again, and click **Open folder**. `debug.log` shows every connection (decrypted or passed through, and why), every request (blocked or allowed), every page (filtered, or why not), and why a site couldn't be reached. Addresses leave out anything after a `?`, and it costs nothing while it's off. Turn it off when you're done.
+
 ## Security
 
 - **The CA is unique to your PC.** It's generated on first run and never leaves it. Nothing in this repo can decrypt your traffic.
@@ -74,7 +78,7 @@ Logins, password managers, banks, government sites, and Microsoft and Xbox servi
 - **Real certificates are still checked.** The proxy verifies every site with Windows' own certificate check, exactly like your browser would (work or custom roots included). Sites with bad certificates fail instead of being silently trusted.
 - **Sites see a browser, not a bot.** Coffee Filter connects to sites with BoringSSL (Chrome's own TLS library) set up the way Chrome sets it, so bot protection (Akamai, DataDome, Cloudflare) sees the same TLS fingerprint it would without Coffee Filter, instead of blocking the page or resetting the connection. Zen does the same.
 - **Excluded apps are never decrypted or filtered.** Add a program (`.exe`) or an installed Microsoft Store app under **Exclusions**, and every connection it makes passes through untouched. Coffee Filter asks Windows which program owns each new connection (only while the list isn't empty), and matches Store apps by package family name, so an exclusion survives app updates.
-- **Your home network is never decrypted.** Private and local addresses (`192.168.x.x`, `10.x.x.x`, `*.local`, Tailscale `100.64.x.x`, ...) are tunneled untouched, as are excluded sites. Plain `http://` requests to excluded sites are left alone too: no blocking, no page changes.
+- **Your home network is never decrypted.** Private and local addresses (`192.168.x.x`, `10.x.x.x`, `*.local`, Tailscale `100.64.x.x`, ...) are tunneled untouched, as are excluded sites. Plain `http://` requests to anything that's never decrypted are left alone too: no blocking, no page changes.
 - **Crash safe.** Your old proxy settings are saved first. They're restored when blocking stops, when the app quits or crashes, when Windows shuts down or you sign out, and otherwise on the next launch. If the core crashes, the app restarts it and turns blocking back on.
 
 > Any tool like this can see your HTTPS traffic. That's how it works. Add banking or work sites to the exclusions if you'd rather they're never touched.
@@ -138,15 +142,17 @@ The package turns off MSIX registry and file virtualization (`unvirtualizedResou
 Run every suite in order with `scripts\test.ps1` (after `scripts\build.ps1` and `scripts\install.ps1`, since the UI tests drive the installed app). Or run them one at a time:
 
 ```bash
-# Unit tests (CA and site certificates, DPAPI, filtering, hosts lists, cosmetic injection, CSP, PAC, config, validation)
+# Unit tests (CA and site certificates, DPAPI, filtering, hosts lists, cosmetic injection, CSP, PAC,
+# Zen's list, pass-through for apps that refuse the certificate, Chrome handshake parts, config, logs)
 cd core
 cargo test --release
 
 # End-to-end: runs the real proxy on port 18229 in a temp profile, with real Chrome when installed.
-# Briefly changes the system proxy and needs internet plus the installed certificate.
+# Briefly changes the system proxy and needs internet plus the installed certificate. Run
+# `. scripts\tools.ps1` first in a new window, so cargo finds CMake, NASM, and LLVM.
 cargo test --release -- --ignored
 
-# App-to-core link (CoreClient) against the real core
+# App-to-core link (CoreClient) against the real core, plus coffee-filter:// link and shortcut parsing
 cd ../tests/CoffeeFilter.Tests
 dotnet test
 
@@ -176,7 +182,8 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - **Windhawk can freeze the Coffee Filter window.** With Windhawk injecting into Coffee Filter, opening an app from a launcher like Raycast while Coffee Filter's window has focus can leave the window not responding (blocking keeps running). Add `CoffeeFilter.exe` to Windhawk's exclusions to avoid it.
 - **A fixed work proxy** (`ProxyEnable=1`) isn't used while blocking is on; traffic goes direct through Coffee Filter instead.
 - **Your account is the trust boundary.** Any program running as you can change files in `%LOCALAPPDATA%\CoffeeFilter` (lists, userscripts) and so add code to pages, or decrypt the CA key. The CA is trusted by the whole PC while its key is readable by your account, so it's only as safe as your account. That's true of any app like this.
-- **WebSockets go direct** from browsers (the PAC sends `ws:`/`wss:` straight out), so filter rules don't apply to them.
+- **WebSockets go direct** from browsers (the PAC sends `ws:`/`wss:` straight out), so filter rules don't apply to them. The few that do come through (from apps) don't carry Chrome's fingerprint.
+- **One HTTP/2 detail differs from Chrome.** The TLS fingerprint and HTTP/2 settings match Chrome's, but the order of a request's first few headers is fixed by the HTTP/2 library (Zen's is Go's own, too).
 - **Work intranets** whose public names point at private addresses are refused through the proxy. Add them to the exclusions.
 - **Generic class/id hide rules** (like `##.ad-banner` on every site) aren't applied yet. Site-specific rules and generic complex selectors are.
 - **Numbers and times** use invariant formatting (the app is built with invariant globalization to save memory).
@@ -187,19 +194,22 @@ That's it! Closing the window keeps blocking running in the background, with a t
     - `build.rs` — puts the coffee icon into `coffee-filter-core.exe`
     - `main.rs` — JSON-lines command loop, start/stop, shutdown handling
     - `ca.rs` — CA generation, DPAPI key storage, trust store install and renewal, site certificates
-    - `filter.rs` — filter lists, adblock engine, request handler
+    - `filter.rs` — filter lists, adblock engine, request handler, detailed log
+    - `upstream.rs` — connections to sites with BoringSSL, set up like Chrome, certificates checked by Windows
     - `cosmetic.rs` — page injection, AdGuard syntax translation, scriptlet library, CSP nonces
     - `procedural.js` — in-page runner for advanced cosmetic rules
     - `userscripts.rs`, `userscripts.js` — userscript downloads, `@match` rules, and the in-page `GM_*` helpers
     - `apps.rs` — excluded apps: which program owns a connection
     - `blocked.html` — the blocked page
-    - `problems.rs` — tracks connections Coffee Filter broke
+    - `problems.rs` — tracks connections Coffee Filter broke, and the sites apps refused its certificate for
     - `sysproxy.rs` — PAC script and Windows proxy settings with backup and restore
+    - `exclusions/` — Zen's list of sites that are never decrypted (MIT)
+    - `pressure.rs` — keeps the core out of efficiency mode, gives way during list parsing, and frees caches when memory runs low
     - `config.rs` — settings and atomic file writes
 - `app/` — WinUI 3 app, packaged as MSIX
 - `tests/CoffeeFilter.Tests/` — C# tests for the app-to-core link
 - `tests/CoffeeFilter.UITests/` — UI tests that drive the installed app (FlaUI)
-- `scripts/` — `build.ps1`, `install.ps1`, `test.ps1` (every suite), `release.ps1` (only after every test passes)
+- `scripts/` — `build.ps1`, `install.ps1`, `test.ps1` (every suite), `release.ps1` (only after every test passes), `tools.ps1` (finds CMake, NASM, and LLVM)
 - `CLAUDE.md` — notes for coding agents (and people) working on the code: build, test, release, style, known traps
 
 ### Files Used
