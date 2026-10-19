@@ -22,6 +22,7 @@ use hudsucker::{
         ServerConfig,
         crypto::CryptoProvider,
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+        server::ServerSessionMemoryCache,
     },
 };
 use std::{
@@ -64,6 +65,8 @@ const RENEW_BEFORE: Duration = Duration::days(30);
 const LEAF_LIFETIME: Duration = Duration::days(7);
 const LEAF_CACHE_SECS: u64 = 24 * 60 * 60;
 const LEAF_CACHE_MAX: usize = 1_000;
+/// TLS sessions kept for resumption, for every site together (see `LeafAuthority`).
+const LEAF_SESSIONS_MAX: usize = 4_096;
 
 fn cert_path() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("ca.cer"))
@@ -366,10 +369,16 @@ pub fn renew() -> io::Result<bool> {
 /// Unlike hudsucker's RcgenAuthority (which reuses the CA key for every site), leaves use
 /// their own key, generated at proxy start and never written anywhere. Leaves are valid
 /// for 7 days and cached for 1 day per host, at most 1,000 hosts.
+///
+/// Every host's config shares one store of TLS sessions. rustls would otherwise give each
+/// its own, sized for 256 sessions up front (about 20 KB, nearly all of it empty), which
+/// was most of what a cached host cost. A session only ever resumes for the site name it
+/// was made for (rustls checks the name, as RFC 6066 requires), so sharing changes nothing else.
 pub struct LeafAuthority {
     issuer:   Issuer<'static, KeyPair>,
     leaf_key: KeyPair,
     provider: Arc<CryptoProvider>,
+    sessions: Arc<ServerSessionMemoryCache>,
     cache:    Mutex<HashMap<String, (Instant, Arc<ServerConfig>)>>,
 }
 
@@ -379,6 +388,7 @@ impl LeafAuthority {
             issuer,
             leaf_key: KeyPair::generate().map_err(io::Error::other)?,
             provider: Arc::new(provider),
+            sessions: ServerSessionMemoryCache::new(LEAF_SESSIONS_MAX),
             cache:    Mutex::new(HashMap::new()),
         })
     }
@@ -415,7 +425,8 @@ impl LeafAuthority {
             .with_single_cert(vec![self.leaf_cert(host)?], key)
             .map_err(io::Error::other)?;
         // HTTP/2 first: browsers then send every request for a site over one connection
-        cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        cfg.alpn_protocols  = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        cfg.session_storage = self.sessions.clone();
         Ok(Arc::new(cfg))
     }
 }
@@ -525,6 +536,16 @@ mod tests {
         let (ca_key, ca_cert) = new_ca().unwrap();
         let authority = LeafAuthority::new(Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap(), aws_lc_rs::default_provider()).unwrap();
         assert!(dump(&authority.leaf_cert("1.2.3.4").unwrap()).contains("IP Address=1.2.3.4"));
+    }
+
+    #[test]
+    fn sites_share_one_session_store() {
+        let (ca_key, ca_cert) = new_ca().unwrap();
+        let authority = LeafAuthority::new(Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap(), aws_lc_rs::default_provider()).unwrap();
+        let a = authority.server_config("a.com").unwrap();
+        let b = authority.server_config("b.com").unwrap();
+        assert!(a.session_storage.put(b"id".to_vec(), b"session".to_vec()));
+        assert_eq!(b.session_storage.get(b"id"), Some(b"session".to_vec()), "one store for every site, not 256 empty slots each");
     }
 
     #[test]

@@ -227,14 +227,15 @@ impl App {
         http.set_nodelay(true);
         let https = upstream::connector(http)?;
 
-        // Idle connections to sites are reused for a short while, 8 per site at most (browsers
-        // open 6 at once to HTTP/1.1 sites), so
-        // they can't pile up and hold memory (hudsucker's header defaults kept)
+        // Idle connections to sites are kept 90 seconds (hyper's default; browsers keep theirs
+        // longer), so clicking on after reading a page reuses the connection instead of a new
+        // TCP and TLS handshake, and 8 per site at most (browsers open 6 at once to HTTP/1.1
+        // sites), so they can't pile up and hold memory (hudsucker's header defaults kept)
         let mut client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
         client
             .http1_title_case_headers(true)
             .http1_preserve_header_case(true)
-            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(8)
             // Chrome's HTTP/2 window sizes and header limit, the other half of its fingerprint
             .http2_header_table_size(upstream::H2_HEADER_TABLE)

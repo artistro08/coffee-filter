@@ -180,6 +180,16 @@ fn cache_path(list: &FilterList) -> io::Result<PathBuf> {
     Ok(dir.join(format!("{name}-{}.txt", &hash[..8])))
 }
 
+/// Delete cached list files no configured list uses (turned off ones keep theirs): lists
+/// that were removed, files from before the URL hash was part of the name, and temp files
+/// a crash left behind. Nothing else lives in the lists folder.
+fn prune_lists(dir: &std::path::Path, keep: &[PathBuf]) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for path in entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && !keep.contains(p)) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 /// Fetch one URL with a size cap. https only (redirects too, see `client`), so a list or
 /// script can't be swapped on the way, even one saved by hand in config.json.
 pub async fn fetch(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
@@ -260,6 +270,12 @@ pub async fn build_engine(config: &Config) -> (Engine, usize, Vec<String>) {
     let missing = config.lists.iter().any(|l| l.enabled && !cache_path(l).is_ok_and(|p| p.exists()))
         || !library.as_ref().is_ok_and(|p| p.exists());
     let errors = if missing { download_lists(config).await } else { vec![] };
+
+    // Files no list uses anymore only take up disk
+    if let Ok(dir) = data_dir() {
+        let keep: Vec<PathBuf> = config.lists.iter().filter_map(|l| cache_path(l).ok()).collect();
+        prune_lists(&dir.join("lists"), &keep);
+    }
 
     let config = config.clone();
     let (engine, rules) = tokio::task::spawn_blocking(move || compile(&config, library.ok()))
@@ -994,6 +1010,21 @@ mod tests {
         remove_conditionals(&mut headers);
         assert!(!headers.contains_key("if-none-match") && !headers.contains_key("if-modified-since"));
         assert!(headers.contains_key("accept"), "other headers stay");
+    }
+
+    #[test]
+    fn stale_list_files_are_pruned() {
+        let dir = std::env::temp_dir().join(format!("cf-lists-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["EasyList-71bee46f.txt", "EasyList.txt", "Removed_List-00000000.txt", "EasyList-71bee46f.txt.tmp"] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        prune_lists(&dir, &[dir.join("EasyList-71bee46f.txt")]);
+
+        let left: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, ["EasyList-71bee46f.txt"], "only files of current lists stay");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
