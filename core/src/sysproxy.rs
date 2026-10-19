@@ -56,6 +56,25 @@ pub fn new_pac_path() -> String {
     format!("/proxy-{}.pac", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
+/// Zen's list of sites that are never decrypted, copied as is from
+/// <https://github.com/ZenPrivacy/zen-desktop/tree/master/internal/sysproxy/exclusions>
+/// (MIT, see exclusions/LICENSE): logins, password managers, banks, government sites, and
+/// Microsoft and Xbox services. They connect directly, around the proxy.
+const ZEN_EXCLUSIONS: [&str; 2] = [include_str!("exclusions/common.txt"), include_str!("exclusions/windows.txt")];
+
+/// Zen's never-decrypted sites, one name each (comments and blank lines dropped).
+pub fn never_decrypted() -> &'static [&'static str] {
+    static HOSTS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    HOSTS.get_or_init(|| {
+        ZEN_EXCLUSIONS
+            .iter()
+            .flat_map(|list| list.lines())
+            .map(|line| line.split('#').next().unwrap_or("").trim())
+            .filter(|host| !host.is_empty())
+            .collect()
+    })
+}
+
 /// The PAC script: web traffic to the proxy; this PC, home-network devices, and any other
 /// protocol connect directly. Address checks only run on IP literals, so the browser never
 /// has to look up a site's name just to decide.
@@ -69,8 +88,12 @@ pub fn pac_script(port: u16) -> String {
         .map(|s| format!(" || dnsDomainIs(host, \"{s}\")"))
         .chain(SYSTEM_HOSTS.iter().map(|h| format!(" || host === \"{h}\" || dnsDomainIs(host, \".{h}\")")))
         .collect();
+    // The site or anything below it; not look-alikes ("evilmicrosoft.com")
+    let direct = never_decrypted().iter().map(|h| format!("\"{h}\"")).collect::<Vec<_>>().join(",");
     format!(
-        r#"function FindProxyForURL(url, host) {{
+        r#"var direct = [{direct}];
+
+function FindProxyForURL(url, host) {{
     var ip = /^\d{{1,3}}(\.\d{{1,3}}){{3}}$/.test(host);
     if (isPlainHostName(host) || host === "localhost" || host.indexOf(":") !== -1{suffixes} ||
         (ip && (isInNet(host, "127.0.0.0", "255.0.0.0") || isInNet(host, "10.0.0.0", "255.0.0.0") ||
@@ -78,6 +101,11 @@ pub fn pac_script(port: u16) -> String {
                 isInNet(host, "169.254.0.0", "255.255.0.0") || isInNet(host, "100.64.0.0", "255.192.0.0") ||
                 isInNet(host, "0.0.0.0", "255.0.0.0")))) {{
         return "DIRECT";
+    }}
+    for (var i = 0; i < direct.length; i++) {{
+        if (host === direct[i] || dnsDomainIs(host, "." + direct[i])) {{
+            return "DIRECT";
+        }}
     }}
     if (url.substring(0, 5) === "http:" || url.substring(0, 6) === "https:") {{
         return "PROXY 127.0.0.1:{port}; DIRECT";
@@ -187,6 +215,18 @@ mod tests {
         assert!(pac.contains("100.64.0.0"));
         for host in SYSTEM_HOSTS {
             assert!(pac.contains(&format!("host === \"{host}\" || dnsDomainIs(host, \".{host}\")")), "{host} goes direct");
+        }
+        for host in ["1password.com", "chase.com", "accounts.google.com", "login.live.com", "windowsupdate.com"] {
+            assert!(pac.contains(&format!("\"{host}\"")), "Zen's {host} goes direct");
+        }
+    }
+
+    #[test]
+    fn zen_list_is_plain_site_names() {
+        let hosts = never_decrypted();
+        assert!(hosts.len() > 100, "the whole list: {}", hosts.len());
+        for host in hosts {
+            assert!(host.contains('.') && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-'), "{host:?}");
         }
     }
 

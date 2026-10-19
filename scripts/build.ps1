@@ -5,13 +5,16 @@
 # Used by: install.ps1, test.ps1 (through install), release.ps1, and by hand.
 # Needs: Rust (https://rustup.rs/), .NET 10 SDK (https://dotnet.microsoft.com/download),
 #        the Windows SDK (rc.exe), the Visual Studio Installer (vswhere.exe, for the AOT linker),
-#        and the signing certificate whose thumbprint is in app\CoffeeFilter.csproj.
+#        CMake, NASM, and LLVM for BoringSSL (see tools.ps1), and the signing certificate whose thumbprint is in app\CoffeeFilter.csproj.
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
 # The AOT linker finds the C++ tools through vswhere.exe
 $env:PATH += ';C:\Program Files (x86)\Microsoft Visual Studio\Installer'
+
+# CMake, NASM, and libclang for BoringSSL
+. "$PSScriptRoot\tools.ps1"
 
 # Core
 Push-Location "$root\core"

@@ -14,6 +14,8 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    thread,
+    time::Duration,
 };
 use winreg::{RegKey, enums::*};
 
@@ -22,13 +24,15 @@ const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 const TEST_PAC: &str = "http://127.0.0.1:1/coffee-filter-test.pac";
 const TEST_LIST_URL: &str = "https://invalid.invalid/never-downloaded";
 
-/// One network rule, plus one of each cosmetic kind on example.com, and one on github.com
-/// (strict CSP: inline scripts only run with our nonce).
+/// One network rule, plus one of each cosmetic kind on example.com, and one on dropbox.com
+/// (strict CSP: inline scripts only run with our nonce). The github.com rule must never apply: it's on
+/// Zen's list of sites that are never decrypted.
 const TEST_LIST: &str = "||doubleclick.net^
+||github.com/robots.txt^
 example.com##h1
 example.com##p:has-text(documentation):remove()
 example.com#%#//scriptlet('remove-attr', 'lang', 'html')
-github.com##footer:remove()
+dropbox.com##footer:remove()
 ";
 
 // =========================================================================
@@ -177,7 +181,7 @@ fn proxy_end_to_end() {
     let result = std::panic::catch_unwind(|| {
         // Start: the user's PAC is replaced by ours
         let (mut core, ready) = Core::spawn(&profile);
-        assert_eq!(ready["status"]["rules"], 5);
+        assert_eq!(ready["status"]["rules"], 6);
         assert_eq!(ready["status"]["cert_installed"], true);
         assert_eq!(core.send(json!({ "cmd": "start" }))["ok"], true);
         // Windows is pointed at our PAC script, which the proxy serves
@@ -208,8 +212,14 @@ fn proxy_end_to_end() {
         assert_eq!(curl("https://example.com/", &[]), "200", "clean site loads");
         assert_eq!(curl(ad, &["Sec-Fetch-Dest: script", "Referer: https://news.example/"]), "403", "ad blocked");
         assert_eq!(curl("https://doubleclick.net/", &["Sec-Fetch-Dest: document"]), "403", "blocked page load");
+        // A site that can't be reached gets a 502, and the detailed log says why
+        assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": true }))["ok"], true);
         assert_eq!(curl("https://self-signed.badssl.com/", &[]), "502", "bad upstream cert refused");
         assert_eq!(curl("https://expired.badssl.com/", &[]), "502", "expired upstream cert refused");
+        assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": false }))["ok"], true);
+        let log = fs::read_to_string(profile.join(r"CoffeeFilter\debug.log")).unwrap_or_default();
+        assert!(log.contains("upstream error https://self-signed.badssl.com/"), "{log}");
+        assert!(log.contains("connect self-signed.badssl.com:443 from 127.0.0.1:"), "{log}");
 
         // Cosmetic filtering in a real browser: hide (CSS), procedural (script), AdGuard scriptlet, strict CSP
         if let Some(dom) = chrome_dom("https://example.com/") {
@@ -220,10 +230,13 @@ fn proxy_end_to_end() {
         if let Some(dom) = chrome_dom_with("https://example.com/", false) {
             assert!(dom.contains("h1{display:none!important}"), "a browser on Windows' settings goes through the PAC script into Coffee Filter");
         }
-        if let Some(dom) = chrome_dom("https://github.com/") {
+        if let Some(dom) = chrome_dom("https://www.dropbox.com/") {
             assert!(dom.contains("<script nonce="), "script injected");
-            assert!(!dom.contains("<footer"), "injected script ran despite GitHub's CSP");
+            assert!(!dom.contains("<footer"), "injected script ran despite Dropbox's CSP");
         }
+
+        // Zen's never-decrypted sites are tunneled untouched, so their rules never apply
+        assert_ne!(curl("https://github.com/robots.txt", &["Sec-Fetch-Dest: document"]), "403", "github.com is never decrypted");
 
         // Exclusions: tunneled untouched, so no blocking and curl sees the real (bad) cert itself
         let reply = core.send(json!({ "cmd": "set_exclusions", "hosts": ["*.DoubleClick.net", "badssl.com", "not a host"] }));
@@ -232,12 +245,21 @@ fn proxy_end_to_end() {
         assert_eq!(curl("https://self-signed.badssl.com/", &[]), "000", "excluded host not decrypted");
 
         // An app with its own certificate store (like a pinned app) rejects ours. OpenSSL uses its own bundle.
-        let openssl = PathBuf::from(r"C:\Program Files\Git\usr\bin\openssl.exe");
-        if openssl.exists() {
-            let _ = Command::new(&openssl)
+        let openssl  = PathBuf::from(r"C:\Program Files\Git\usr\bin\openssl.exe");
+        let verifies = || {
+            let out = Command::new(&openssl)
                 .args(["s_client", "-proxy", &format!("127.0.0.1:{PORT}"), "-connect", "www.wikipedia.org:443", "-servername", "www.wikipedia.org", "-verify_return_error"])
                 .stdin(Stdio::null())
-                .output();
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).contains("Verify return code: 0 (ok)")
+        };
+        if openssl.exists() {
+            assert!(!verifies(), "decrypted, so OpenSSL refuses our certificate");
+
+            // Like Zen: the site it refused is tunneled from then on, so OpenSSL sees the real one
+            thread::sleep(Duration::from_millis(300));
+            assert!(verifies(), "tunneled after the refusal");
         }
 
         // Connection problems Coffee Filter caused are reported per host
@@ -248,6 +270,12 @@ fn proxy_end_to_end() {
             assert_eq!(kind_of("www.wikipedia.org"), Some(json!("app_rejected_certificate")), "{problems}");
         }
         assert_eq!(kind_of("example.com"), None, "working sites aren't problems");
+
+        // Clear decrypts the site again
+        if openssl.exists() {
+            assert_eq!(core.send(json!({ "cmd": "clear_problems" }))["ok"], true);
+            assert!(!verifies(), "decrypted again after Clear");
+        }
 
         let status = core.send(json!({ "cmd": "status" }))["status"].clone();
         assert!(status["blocked"].as_u64().unwrap() >= 1);

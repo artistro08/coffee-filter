@@ -14,6 +14,9 @@ param([switch]$SkipUi)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
+# CMake, NASM, and libclang for BoringSSL
+. "$PSScriptRoot\tools.ps1"
+
 function Step($name, [scriptblock]$run) {
     "== $name"
     & $run

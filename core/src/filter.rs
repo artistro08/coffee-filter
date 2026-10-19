@@ -3,7 +3,7 @@
 use crate::{
     apps,
     config::{Config, ExcludedApp, FilterList, data_dir, write_atomic},
-    cosmetic, sysproxy, userscripts,
+    cosmetic, problems, sysproxy, userscripts,
 };
 use adblock::{Engine, lists::{FilterFormat, FilterSet, ParseOptions}, request::Request as AdRequest, resources::PermissionMask};
 use hyper_util::client::legacy::connect::dns::{GaiResolver, Name};
@@ -45,6 +45,8 @@ pub struct Shared {
     pub apps:        RwLock<Arc<Vec<ExcludedApp>>>,
     /// Per connection: does it come from an excluded app?
     pub app_cache:   apps::Cache,
+    /// Connection problems, and the sites tunneled because an app refused the certificate.
+    pub problems:    Arc<problems::Problems>,
 }
 
 /// Recently blocked requests for the app's live log. Recording is off (one atomic read per
@@ -115,7 +117,8 @@ impl Log {
 #[derive(Default)]
 pub struct Trace {
     on:   AtomicBool,
-    file: Mutex<Option<fs::File>>,
+    /// The open file and its folder, from the first line on.
+    file: Mutex<Option<(PathBuf, fs::File)>>,
     /// Folder for the file; the data folder unless a test sets one.
     dir:  Option<PathBuf>,
 }
@@ -140,19 +143,19 @@ impl Trace {
             return;
         }
         use std::io::Write;
-        let Some(dir) = self.dir.clone().or_else(|| data_dir().ok()) else { return };
-        let path     = dir.join("debug.log");
-        let mut file = self.file.lock().unwrap();
+        let mut open = self.file.lock().unwrap();
 
         // Start over once it's big, keeping one previous file
-        if file.as_ref().and_then(|f| f.metadata().ok()).is_some_and(|m| m.len() > Self::MAX_BYTES) {
-            *file = None;
-            let _ = fs::rename(&path, dir.join("debug.old.log"));
+        if open.as_ref().and_then(|(_, f)| f.metadata().ok()).is_some_and(|m| m.len() > Self::MAX_BYTES)
+            && let Some((dir, _)) = open.take()
+        {
+            let _ = fs::rename(dir.join("debug.log"), dir.join("debug.old.log"));
         }
-        if file.is_none() {
-            *file = fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        if open.is_none() {
+            let Some(dir) = self.dir.clone().or_else(|| data_dir().ok()) else { return };
+            *open = fs::OpenOptions::new().create(true).append(true).open(dir.join("debug.log")).ok().map(|f| (dir, f));
         }
-        if let Some(f) = file.as_mut() {
+        if let Some((_, f)) = open.as_mut() {
             let _ = writeln!(f, "{} {line}", time::OffsetDateTime::now_utc());
         }
     }
@@ -281,7 +284,6 @@ fn compile(config: &Config, library: Option<PathBuf>) -> (Engine, usize) {
                         add_list(&mut set, text, list.trusted);
                     }
                 }
-                add_list(&mut set, BUILTIN_RULES.to_string(), false);
                 (Engine::new_with_filter_set(set), rules)
             });
 
@@ -315,8 +317,8 @@ fn engine_key(config: &Config) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         // Bump when the way lists are compiled changes, so old engine.dat files are rebuilt
-        + "\nformat:4"
-        + "\nbuiltin:" + &sha1_smol::Sha1::from(BUILTIN_RULES).digest().to_string()
+        // (5: no built-in rules; only the filter lists decide what's filtered)
+        + "\nformat:5"
 }
 
 fn load_cached_engine(key: &str) -> Option<(Engine, usize)> {
@@ -330,15 +332,6 @@ fn load_cached_engine(key: &str) -> Option<(Engine, usize)> {
     engine.deserialize(&fs::read(dir.join("engine.dat")).ok()?).ok()?;
     Some((engine, rules.parse().ok()?))
 }
-
-/// Coffee Filter's own fixes, for ads the public lists don't catch yet. Always on.
-///
-/// X marks promoted posts with a small "Ad" label (the lists still look for "Promoted"), and
-/// counts their views with impression pixels. Not `placementTracking` alone: X's video
-/// player uses it too, so posts vanished once their video played.
-const BUILTIN_RULES: &str = r#"x.com,twitter.com##div[data-testid="cellInnerDiv"]:has(div[data-testid$="-impression-pixel"])
-x.com,twitter.com##article[data-testid="tweet"] span:has-text(/^Ad$/):upward(div[data-testid="cellInnerDiv"])
-"#;
 
 /// Add one list, detecting hosts-file format (`0.0.0.0 domain`) from its first rule.
 /// Network and cosmetic rules are both kept; AdGuard-only syntax is translated first.
@@ -650,9 +643,23 @@ impl Blocker {
         apps::is_excluded(&apps, &self.shared.app_cache, ctx.client_addr).await
     }
 
-    /// Private hosts, Windows' update and Store servers, and your exclusions are only tunneled.
-    fn decrypts(&self, host: &str) -> bool {
-        !is_private_host(host) && !is_excluded(&sysproxy::SYSTEM_HOSTS, host) && !is_excluded(&self.shared.exclusions.read().unwrap(), host)
+    /// Why `host` is only tunneled, never decrypted (for the detailed log), or None when it's
+    /// decrypted: private hosts, Windows' update and Store servers, Zen's never-decrypted sites,
+    /// sites an app refused the certificate for, and your exclusions.
+    fn tunnel_reason(&self, host: &str) -> Option<&'static str> {
+        if is_private_host(host) {
+            Some("private address")
+        } else if is_excluded(&sysproxy::SYSTEM_HOSTS, host) {
+            Some("Windows Update or Store")
+        } else if is_excluded(sysproxy::never_decrypted(), host) {
+            Some("on Zen's never-decrypted list")
+        } else if self.shared.problems.passes_through(host) {
+            Some("an app refused Coffee Filter's certificate for it")
+        } else if is_excluded(&self.shared.exclusions.read().unwrap(), host) {
+            Some("excluded site")
+        } else {
+            None
+        }
     }
 }
 
@@ -708,7 +715,9 @@ impl HttpHandler for Blocker {
         // Excluded sites and apps over plain HTTP are left alone too: no blocking, no page changes
         let excluded_site = is_excluded(&self.shared.exclusions.read().unwrap(), &host) || is_excluded(&sysproxy::SYSTEM_HOSTS, &host);
         if excluded_site || self.is_excluded_app(ctx).await {
-            self.shared.trace.write(format_args!("{} {} untouched ({})", req.method(), without_query(&req.uri().to_string()), if excluded_site { "excluded site" } else { "excluded app" }));
+            if self.shared.trace.is_on() {
+                self.shared.trace.write(format_args!("{} {} untouched ({})", req.method(), without_query(&req.uri().to_string()), if excluded_site { "excluded site" } else { "excluded app" }));
+            }
             return req.into();
         }
 
@@ -783,7 +792,8 @@ impl HttpHandler for Blocker {
         };
         let engine  = self.shared.engine.read().unwrap().clone();
         let scripts = self.shared.userscripts.read().unwrap().clone();
-        cosmetic::inject(res, &engine, &userscripts::for_page(&scripts, &url), &url, &self.shared.trace)
+        // Userscripts are matched only once the response turns out to be a page
+        cosmetic::inject(res, &engine, || userscripts::for_page(&scripts, &url), &url, &self.shared.trace)
     }
 
     /// The site couldn't be reached (or broke off); the browser gets a 502 either way, and the
@@ -807,25 +817,27 @@ impl HttpHandler for Blocker {
         let Some(host) = req.uri().host() else { return false };
         let tunnel = if req.uri().port_u16() != Some(443) {
             Some("not port 443")
-        } else if !self.decrypts(host) {
-            Some("private, system, or excluded site")
+        } else if let Some(why) = self.tunnel_reason(host) {
+            Some(why)
         } else if self.is_excluded_app(ctx).await {
             Some("excluded app")
         } else {
             None
         };
-        self.shared.trace.write(format_args!("connect {} from {} {}", req.uri(), ctx.client_addr, tunnel.map_or("decrypted".into(), |why| format!("tunneled ({why})"))));
+        if self.shared.trace.is_on() {
+            let what = tunnel.map_or("decrypted".into(), |why| format!("tunneled ({why})"));
+            self.shared.trace.write(format_args!("connect {} from {} {what}", req.uri(), ctx.client_addr));
+        }
         tunnel.is_none()
     }
 
     /// Check again with the site name inside the TLS handshake, which can differ from the
     /// CONNECT address; a certificate is only ever made for a name that passes.
     async fn should_intercept_tls(&mut self, _ctx: &HttpContext, hello: ClientHello<'_>) -> bool {
-        let decrypt = hello.server_name().is_some_and(|host| self.decrypts(host));
-        if !decrypt {
-            self.shared.trace.write(format_args!("tls name {:?} tunneled (private, system, or excluded site)", hello.server_name()));
-        }
-        decrypt
+        let Some(host) = hello.server_name() else { return false };
+        let Some(why) = self.tunnel_reason(host) else { return true };
+        self.shared.trace.write(format_args!("tls name {host} tunneled ({why})"));
+        false
     }
 }
 
@@ -851,6 +863,26 @@ mod tests {
         let text = fs::read_to_string(&log).unwrap();
         assert!(text.contains("GET https://a.com/p allowed"), "{text}");
         assert!(!text.contains("secret") && !text.contains("before") && !text.contains("after"), "{text}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trace_starts_over_past_its_limit() {
+        let dir   = std::env::temp_dir().join(format!("cf-trace-roll-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let log   = dir.join("debug.log");
+        let trace = Trace { dir: Some(dir.clone()), ..Default::default() };
+
+        // A log already past the limit (sparse, so the test writes almost nothing)
+        fs::File::create(&log).unwrap().set_len(Trace::MAX_BYTES + 1).unwrap();
+        trace.set(true);
+        trace.write(format_args!("first"));
+        trace.write(format_args!("second"));
+        trace.set(false);
+
+        let new = fs::read_to_string(&log).unwrap();
+        assert!(new.contains("second") && !new.contains("first"), "{new}");
+        assert!(fs::metadata(dir.join("debug.old.log")).unwrap().len() > Trace::MAX_BYTES, "the big one is kept as debug.old.log");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -936,6 +968,14 @@ mod tests {
     }
 
     #[test]
+    fn zen_sites_are_never_decrypted() {
+        let zen = sysproxy::never_decrypted();
+        assert!(is_excluded(zen, "github.com") && is_excluded(zen, "gist.github.com") && is_excluded(zen, "Login.Live.com"));
+        assert!(!is_excluded(zen, "notgithub.com"), "look-alikes aren't");
+        assert!(!is_excluded(zen, "x.com") && !is_excluded(zen, "www.youtube.com"));
+    }
+
+    #[test]
     fn page_loads_always_ask_for_the_whole_page() {
         let mut headers = hudsucker::hyper::HeaderMap::new();
         headers.insert("if-none-match", "\"abc\"".parse().unwrap());
@@ -1000,17 +1040,6 @@ mod tests {
         assert!(page.contains(&format!("--accent: {light};")) && page.contains(&format!("--accent: {dark};")), "Windows accent color");
         assert!(page.contains("data:image/png;base64,iVBOR"), "icon is built in");
         assert!(page.contains("href=\"coffee-filter://exclude?host=evil.com\""), "Exclude opens the app with the site name");
-    }
-
-    #[test]
-    fn builtin_rules_hide_x_promoted_posts() {
-        let mut set = FilterSet::new(false);
-        add_list(&mut set, BUILTIN_RULES.to_string(), false);
-        let engine = Engine::new_with_filter_set(set);
-        let found  = engine.url_cosmetic_resources("https://x.com/home");
-        let all    = format!("{:?} {:?}", found.hide_selectors, found.procedural_actions);
-        assert!(all.contains("impression-pixel") && all.contains("cellInnerDiv"), "{all}");
-        assert!(!all.contains(r#"cellInnerDiv\"]:has(div[data-testid=\"placementTracking\"])"#), "video posts use placementTracking too: {all}");
     }
 
     #[test]

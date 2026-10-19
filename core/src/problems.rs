@@ -18,7 +18,7 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -51,6 +51,12 @@ pub struct Problems {
     dirty: AtomicBool,
     /// Where a host that just became a problem is sent, so the app can notify right away.
     found: OnceLock<UnboundedSender<Problem>>,
+    /// Sites an app refused Coffee Filter's certificate for. Like Zen's "transparent hosts",
+    /// they're tunneled untouched for every app until Coffee Filter restarts (or Clear). Only
+    /// a refusal counts, never a hang-up: a web page can make the browser hang up on purpose
+    /// (canceled requests), and must not be able to switch filtering off for a site. Each is
+    /// also in `map`, so it's dropped with it and stays as bounded.
+    transparent: RwLock<Vec<String>>,
 }
 
 /// Hang-ups only count once they repeat; browsers drop the odd connection on their own.
@@ -66,6 +72,12 @@ impl Problems {
         rx
     }
 
+    /// Whether an app refused Coffee Filter's certificate for `host` (or a site above it), so
+    /// it's tunneled instead of decrypted.
+    pub fn passes_through(&self, host: &str) -> bool {
+        crate::filter::is_excluded(&self.transparent.read().unwrap(), host)
+    }
+
     pub fn record(&self, host: &str, kind: &'static str, detail: String) {
         let now     = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut map = self.map.lock().unwrap();
@@ -76,6 +88,7 @@ impl Problems {
             && let Some(oldest) = map.values().min_by_key(|p| p.last).map(|p| p.host.clone())
         {
             map.remove(&oldest);
+            self.transparent.write().unwrap().retain(|h| *h != oldest);
         }
         let entry = map.entry(host.to_string()).or_insert_with(|| Problem { host: host.to_string(), kind, detail: String::new(), count: 0, last: 0 });
         let was   = entry.count > 0 && shown(entry);
@@ -84,6 +97,14 @@ impl Problems {
         entry.count += 1;
         entry.last   = now;
         self.dirty.store(true, Ordering::Relaxed);
+
+        // Apps get through to this site untouched from their next connection on
+        if kind == "app_rejected_certificate" {
+            let mut transparent = self.transparent.write().unwrap();
+            if !transparent.iter().any(|h| h == host) {
+                transparent.push(host.to_string());
+            }
+        }
 
         // Only the first time a host shows up, not on every repeat
         if !was && shown(entry)
@@ -111,8 +132,11 @@ impl Problems {
         list
     }
 
+    /// Forget the problems, and decrypt their sites again (they're tunneled again if an app
+    /// still refuses).
     pub fn clear(&self) {
         self.map.lock().unwrap().clear();
+        self.transparent.write().unwrap().clear();
         self.dirty.store(true, Ordering::Relaxed);
     }
 }
@@ -121,7 +145,7 @@ impl Problems {
 pub fn classify(message: &str, error: &str) -> Option<(&'static str, String)> {
     let lower = error.to_ascii_lowercase();
     if message.contains("Failed to establish TLS connection") && lower.contains("alert") {
-        return Some(("app_rejected_certificate", "This app doesn't accept Coffee Filter's certificate. It may check for its own. Exclude it to let it connect.".into()));
+        return Some(("app_rejected_certificate", "An app doesn't accept Coffee Filter's certificate (it checks for its own), so this site now connects without filtering until Coffee Filter restarts.".into()));
     }
     if message.contains("Failed to establish TLS connection") && lower.contains("handshake eof") {
         return Some(("app_hung_up", "An app keeps closing the connection when it sees Coffee Filter's certificate. Exclude it if something isn't working.".into()));
@@ -267,6 +291,38 @@ mod tests {
             p.record(&format!("h{i}.com"), "app_rejected_certificate", "x".into());
         }
         assert!(p.list().len() <= MAX_HOSTS);
+    }
+
+    #[test]
+    fn a_refused_certificate_tunnels_that_site() {
+        let problems = Problems::default();
+        assert!(!problems.passes_through("discovery.elgato.com"));
+
+        // Refusing the certificate counts right away, for the site and below it
+        problems.record("Discovery.Elgato.com", "app_rejected_certificate", String::new());
+        assert!(problems.passes_through("discovery.elgato.com"));
+        assert!(problems.passes_through("eu.discovery.elgato.com"));
+        assert!(!problems.passes_through("elgato.com"), "not the sites above it");
+        assert!(!problems.passes_through("notdiscovery.elgato.com"));
+
+        // Hanging up never does, however often: a web page can cancel its own requests
+        for _ in 0..5 {
+            problems.record("ads.example.com", "app_hung_up", String::new());
+        }
+        assert!(!problems.passes_through("ads.example.com"), "a page must not switch filtering off for a site");
+
+        // Bounded: a site dropped from the problem list is decrypted again (all of these land in
+        // the same second, so make the first one the oldest)
+        problems.map.lock().unwrap().get_mut("Discovery.Elgato.com").unwrap().last = 0;
+        for i in 0..MAX_HOSTS {
+            problems.record(&format!("s{i}.example.net"), "app_rejected_certificate", String::new());
+        }
+        assert!(!problems.passes_through("discovery.elgato.com"), "the oldest was dropped");
+        assert!(problems.transparent.read().unwrap().len() <= MAX_HOSTS);
+
+        // Clear decrypts them again
+        problems.clear();
+        assert!(!problems.passes_through("discovery.elgato.com"));
     }
 
     #[test]

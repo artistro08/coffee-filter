@@ -6,10 +6,14 @@ edition = "2024"
 [dependencies]
 adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling", "css-validation"] }
 base64 = "0.22"
+boring = "5"
+boring-sys = "5"
+brotli-decompressor = "5"
+foreign-types = "0.5"
 getrandom = "0.4"
 http-body-util = "0.1"
 hudsucker = { version = "0.25", features = ["rcgen-ca", "rustls-client", "decoder", "http2"], default-features = false }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "tls12"] }
+hyper-boring = "5"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

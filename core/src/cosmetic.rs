@@ -250,7 +250,7 @@ fn new_nonce() -> String {
 
 /// Add cosmetic filtering to an HTML page response. Anything that isn't a plain,
 /// decodable HTML page passes through untouched.
-pub fn inject(res: Response<Body>, engine: &Engine, userscripts: &[&str], url: &str, trace: &crate::filter::Trace) -> Response<Body> {
+pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce() -> Vec<&'a str>, url: &str, trace: &crate::filter::Trace) -> Response<Body> {
     let headers = res.headers();
     let is_html = headers
         .get(CONTENT_TYPE)
@@ -264,12 +264,16 @@ pub fn inject(res: Response<Body>, engine: &Engine, userscripts: &[&str], url: &
     });
     let page = crate::filter::without_query(url);
     if res.status() != StatusCode::OK || !is_html || !decodable {
+        // Data (JSON and the like) is expected to pass untouched; not worth a line each
+        if res.status() == StatusCode::OK && !is_html {
+            return res;
+        }
         trace.write(format_args!("page {page} not filtered: status {}, html {is_html}, readable encoding {decodable}", res.status()));
         return res;
     }
 
     let nonce = new_nonce();
-    let Some(tags) = page_tags(engine, userscripts, url, &nonce) else {
+    let Some(tags) = page_tags(engine, &userscripts(), url, &nonce) else {
         trace.write(format_args!("page {page} not filtered: no rules or userscripts for it"));
         return res;
     };
@@ -467,7 +471,7 @@ mod tests {
             .body(Body::from("<html><head></head></html>"))
             .unwrap();
 
-        let out      = inject(res, &engine, &[], "https://a.com/", &Default::default());
+        let out      = inject(res, &engine, Vec::new, "https://a.com/", &Default::default());
         let policies = out.headers().get_all(CONTENT_SECURITY_POLICY).iter().cloned().collect::<Vec<_>>();
         assert!(policies.contains(&raw), "unreadable policy passed through untouched");
         assert!(policies.iter().any(|p| p.to_str().is_ok_and(|s| s.contains("'nonce-"))), "readable policy got our nonce");
@@ -480,7 +484,7 @@ mod tests {
         let engine = engine_with("a.com##.ad", false);
         let page   = "<html><head></head></html>";
         let res    = Response::builder().header(CONTENT_TYPE, "application/xhtml+xml").body(Body::from(page)).unwrap();
-        let html   = inject(res, &engine, &[], "https://a.com/", &Default::default()).into_body().collect().await.unwrap().to_bytes();
+        let html   = inject(res, &engine, Vec::new, "https://a.com/", &Default::default()).into_body().collect().await.unwrap().to_bytes();
         assert_eq!(html, Bytes::from(page));
     }
 

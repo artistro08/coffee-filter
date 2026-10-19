@@ -13,6 +13,7 @@ mod filter;
 mod pressure;
 mod problems;
 mod sysproxy;
+mod upstream;
 mod userscripts;
 
 use config::Config;
@@ -80,7 +81,6 @@ enum Command {
 struct App {
     config:         Config,
     shared:         Arc<Shared>,
-    problems:       Arc<problems::Problems>,
     rules:          usize,
     running:        Option<(oneshot::Sender<()>, JoinHandle<()>)>,
     /// Cached: checking the trust store on every status reply would cost a lookup every 2s.
@@ -141,7 +141,7 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> io::Result<T> + Send
 
 impl App {
     fn status(&self) -> Value {
-        self.problems.save_if_changed();
+        self.shared.problems.save_if_changed();
         json!({
             "running":        self.running.is_some(),
             "cert_installed": self.cert_installed,
@@ -154,7 +154,7 @@ impl App {
             "excluded_apps":  self.config.excluded_apps,
             "lists":          self.config.lists,
             "userscripts":    self.config.userscripts,
-            "problems":       self.problems.list(),
+            "problems":       self.shared.problems.list(),
             "detailed_log":   self.config.detailed_log,
         })
     }
@@ -201,25 +201,22 @@ impl App {
         let listener = bind_exclusive(self.config.port).map_err(|e| format!("Port {} unavailable: {e}", self.config.port))?;
         let (tx, rx) = oneshot::channel();
 
-        // Verify sites with Windows' own certificate check, so Coffee Filter accepts and
-        // rejects exactly what a browser on this PC would (including work or custom roots)
+        // WebSockets: verify sites with Windows' own certificate check, so Coffee Filter accepts
+        // and rejects exactly what a browser on this PC would (including work or custom roots)
         let tls = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
             .with_safe_default_protocol_versions()
             .and_then(|b| b.with_platform_verifier())
             .map_err(|e| e.to_string())?
             .with_no_client_auth();
-        // HTTP/2 when the site supports it (one connection, many requests at once). No Nagle
-        // delay on small writes. Public names that resolve to this PC or the home network are
-        // refused, so a web page can't use the proxy to reach local devices (DNS rebinding).
+        // Pages: Chrome's TLS handshake, so bot protection sees the browser it expects, with
+        // Windows checking certificates the same way (see upstream.rs). HTTP/2 when the site
+        // supports it (one connection, many requests at once). No Nagle delay on small writes.
+        // Public names that resolve to this PC or the home network are refused, so a web page
+        // can't use the proxy to reach local devices (DNS rebinding).
         let mut http = HttpConnector::new_with_resolver(filter::PublicOnly::default());
         http.enforce_http(false);
         http.set_nodelay(true);
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls.clone())
-            .https_or_http()
-            .enable_http1()
-            .enable_http2()
-            .wrap_connector(http);
+        let https = upstream::connector(http)?;
 
         // Idle connections to sites are reused for a short while, 8 per site at most (browsers
         // open 6 at once to HTTP/1.1 sites), so
@@ -229,7 +226,13 @@ impl App {
             .http1_title_case_headers(true)
             .http1_preserve_header_case(true)
             .pool_idle_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(8);
+            .pool_max_idle_per_host(8)
+            // Chrome's HTTP/2 window sizes and header limit, the other half of its fingerprint
+            .http2_header_table_size(upstream::H2_HEADER_TABLE)
+            .http2_max_frame_size(None)
+            .http2_initial_stream_window_size(upstream::H2_STREAM_WINDOW)
+            .http2_initial_connection_window_size(upstream::H2_CONNECTION_WINDOW)
+            .http2_max_header_list_size(upstream::H2_MAX_HEADER_LIST);
 
         let proxy = Proxy::builder()
             .with_listener(listener)
@@ -355,7 +358,7 @@ impl App {
                 self.save_apps()
             }
             Command::ClearProblems => {
-                self.problems.clear();
+                self.shared.problems.clear();
                 Ok(())
             }
             Command::SetList { name, enabled } => {
@@ -499,10 +502,11 @@ async fn main() {
         resolver:    filter::resolver_client().expect("HTTP client"),
         apps:        RwLock::new(Arc::new(config.excluded_apps.clone())),
         app_cache:   Default::default(),
+        problems,
     });
     shared.trace.set(config.detailed_log);
     pressure::watch_memory(shared.clone());
-    let mut app = App { config, shared, problems, rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
+    let mut app = App { config, shared, rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
     app.refresh_cert();
 
     let mut stdout = tokio::io::stdout();
@@ -513,7 +517,7 @@ async fn main() {
 
     // Command Loop. A host that just started having problems is announced between replies
     // ({"event":"problem"}), so the app can notify without polling.
-    let mut found = app.problems.subscribe();
+    let mut found = app.shared.problems.subscribe();
     let ending    = windows_ending();
     tokio::pin!(ending);
     loop {

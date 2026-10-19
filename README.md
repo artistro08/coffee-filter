@@ -16,10 +16,6 @@ When a whole page is blocked, you get a Windows 11 styled page in your own accen
 
 Clicking a `t.co` link doesn't send your browser to t.co. Coffee Filter asks t.co itself where the link goes (without your cookies or the page you came from), removes tracking parameters like `utm_*` and `fbclid` from the destination, and sends the browser straight there.
 
-### Built-in Fixes
-
-Coffee Filter carries a few rules of its own for ads the public lists don't catch yet. Today that's X's promoted posts, which are now labeled "Ad" instead of "Promoted".
-
 ### Cosmetic Filtering
 
 Some ads (like Reddit's promoted posts) are part of the page itself, so there's no request to block. For those, Coffee Filter adds one `<style>` and one `<script>` right after `<head>` in each HTML page, the way Zen and AdGuard do:
@@ -51,9 +47,15 @@ Click the tray icon (or press **Win+Alt+C**) for a small flyout with the **Ad bl
 
 Under **Shortcuts**, you can set keyboard shortcuts that work anywhere in Windows: open the flyout, turn ad blocking on or off, update filter lists, and open Coffee Filter. Click a shortcut and press the keys you want. If Windows or another app already uses them, Coffee Filter says so.
 
-### Notifications
+### Apps That Refuse the Certificate
 
-When an app starts failing to connect through Coffee Filter (it refuses the certificate), you get a notification. Click it to open **Connection problems**, where you can exclude it. To turn these off, use **Settings › System › Notifications › Coffee Filter** in Windows.
+Some apps check certificates against their own list instead of Windows' (Stream Deck plugins, apps built on Node.js, Java, or Python, apps that pin their certificate), so they refuse Coffee Filter's. When one does, Coffee Filter stops decrypting that site and passes it through untouched until it restarts, the way Zen does, with nothing for you to set up. An app that just hangs up without saying why isn't let through on its own (a web page could fake that), so exclude it if something isn't working.
+
+You get a notification either way; click it to see the site under **Connection problems**. **Clear** there decrypts those sites again. To turn the notifications off, use **Settings › System › Notifications › Coffee Filter** in Windows.
+
+### Sites That Are Never Decrypted
+
+Logins, password managers, banks, government sites, and Microsoft and Xbox services (GitHub, Discord, and Slack among them) connect directly, around Coffee Filter, so nothing is blocked there and userscripts don't run there. The list is [Zen's](https://github.com/ZenPrivacy/zen-desktop/tree/master/internal/sysproxy/exclusions), used as is.
 
 ## Security
 
@@ -70,6 +72,7 @@ When an app starts failing to connect through Coffee Filter (it refuses the cert
 - **Web pages can't raise an admin prompt.** When an Install or Exclude button on a web page opens the app (to start it, not when it's already running), it skips the automatic certificate setup, and the Add or Exclude button stays off for a second so a stray keystroke can't accept it. A site name from an Exclude link must look like a site name before it's shown.
 - **No control port.** The app talks to the core over a private pipe (stdin/stdout).
 - **Real certificates are still checked.** The proxy verifies every site with Windows' own certificate check, exactly like your browser would (work or custom roots included). Sites with bad certificates fail instead of being silently trusted.
+- **Sites see a browser, not a bot.** Coffee Filter connects to sites with BoringSSL (Chrome's own TLS library) set up the way Chrome sets it, so bot protection (Akamai, DataDome, Cloudflare) sees the same TLS fingerprint it would without Coffee Filter, instead of blocking the page or resetting the connection. Zen does the same.
 - **Excluded apps are never decrypted or filtered.** Add a program (`.exe`) or an installed Microsoft Store app under **Exclusions**, and every connection it makes passes through untouched. Coffee Filter asks Windows which program owns each new connection (only while the list isn't empty), and matches Store apps by package family name, so an exclusion survives app updates.
 - **Your home network is never decrypted.** Private and local addresses (`192.168.x.x`, `10.x.x.x`, `*.local`, Tailscale `100.64.x.x`, ...) are tunneled untouched, as are excluded sites. Plain `http://` requests to excluded sites are left alone too: no blocking, no page changes.
 - **Crash safe.** Your old proxy settings are saved first. They're restored when blocking stops, when the app quits or crashes, when Windows shuts down or you sign out, and otherwise on the next launch. If the core crashes, the app restarts it and turns blocking back on.
@@ -108,12 +111,14 @@ Import-Certificate -FilePath .\CoffeeFilter-signing.cer -CertStoreLocation Cert:
 - [Rust](https://rustup.rs/)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - [Windows SDK](https://developer.microsoft.com/windows/downloads/windows-sdk/) (its `rc.exe` puts the icon into the core)
+- For BoringSSL (the core connects to sites the way Chrome does, see below): Visual Studio's **C++ CMake tools for Windows**, [NASM](https://www.nasm.us/) (`winget install NASM.NASM`), and [LLVM](https://llvm.org/) (`winget install LLVM.LLVM`)
 
 ### Build
 
-Build the core first, since the app bundles it:
+Build the core first, since the app bundles it. `scripts\tools.ps1` points the build at CMake, NASM, and LLVM (`scripts\build.ps1` does this for you):
 
-```bash
+```powershell
+. scripts\tools.ps1
 cd core
 cargo build --release
 cd ../app
@@ -164,7 +169,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 ## Known Limits
 
 - **Firefox** trusts the Windows certificate store by default on Windows. If you turned that off, set `security.enterprise_roots.enabled` back to `true` in `about:config`.
-- **Apps with certificate pinning** (some games, banking apps, Discord, etc.) will fail through the proxy. They show up under **Connection problems** with an **Exclude** button.
+- **Apps that refuse Coffee Filter's certificate** (pinning, or their own certificate list) fail on their first try at a site; after that the site connects untouched until Coffee Filter restarts. Apps that hang up instead keep failing until you exclude them. To skip even the first failure, exclude the app.
 - **Strict revocation checking**: tools that hard-fail when revocation can't be checked (like Windows `curl` without `--ssl-no-revoke`) will fail. Browsers don't.
 - **Windows Update and Microsoft Store downloads always connect directly.** Windows Update uses your proxy setting and refuses connections it can't verify end to end, so Microsoft's update and Store servers (`*.mp.microsoft.com`, `*.update.microsoft.com`, `*.windowsupdate.com`, ...) are never sent through or decrypted by Coffee Filter.
 - **Sandboxed Store apps aren't filtered.** Windows doesn't let sandboxed Store apps (the Store, Xbox, Photos, ...) connect to `127.0.0.1`, so they go direct instead of through the proxy. Desktop apps from the Store (Spotify, WhatsApp, and other full-trust packages) do go through it, and can be added to **Excluded apps**.
