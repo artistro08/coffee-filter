@@ -26,9 +26,10 @@ use hudsucker::rustls::{
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use foreign_types::ForeignTypeRef;
-use hyper_boring::HttpsConnector;
+use hyper_boring::{HttpsConnector, HttpsLayer, HttpsLayerSettings};
 use hyper_util::client::legacy::connect::HttpConnector;
 use std::{io, sync::Arc};
+use tower_layer::Layer;
 
 /// Chrome's TLS 1.2 cipher order (TLS 1.3's is BoringSSL's own, the same as Chrome's).
 const CIPHERS: &str = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:\
@@ -101,7 +102,16 @@ pub fn connector(http: HttpConnector<PublicOnly>) -> Result<HttpsConnector<HttpC
     tls.enable_signed_cert_timestamps();
     tls.add_certificate_compression_algorithm(Brotli).map_err(|e| e.to_string())?;
 
-    let mut https = HttpsConnector::with_connector(http, tls).map_err(|e| e.to_string())?;
+    // A resumed session skips the certificate unless asked; Chrome re-checks it, so do we
+    // SAFETY: a valid SSL_CTX* owned by `tls` for the whole call.
+    unsafe { boring_sys::SSL_CTX_set_reverify_on_resume(tls.as_ptr(), 1) };
+
+    // Two saved sessions per site, like Chrome, instead of eight
+    // TODO: hyper-boring never forgets a site once it has a session, so a long run keeps one
+    // small entry per site visited; it has no way to cap the number of sites yet
+    let mut settings = HttpsLayerSettings::builder();
+    settings.set_session_cache_capacity(2);
+    let mut https = HttpsLayer::with_connector_and_settings(tls, settings.build()).map_err(|e| e.to_string())?;
     https.set_callback(move |config, uri| {
         chrome_extras(config);
 
@@ -111,7 +121,7 @@ pub fn connector(http: HttpConnector<PublicOnly>) -> Result<HttpsConnector<HttpC
         config.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| verify(&*verifier, &host, ssl));
         Ok(())
     });
-    Ok(https)
+    Ok(https.layer(http))
 }
 
 /// Per-connection parts of Chrome's handshake the safe API doesn't cover: ALPS (Chrome's

@@ -33,6 +33,7 @@ public partial class App : Application
     private bool _endingSession;
     private bool _runningAtSessionEnd;
     private bool _coreRefused;
+    private bool _retriedRefusal;
 
     public static App Instance => _instance!;
 
@@ -78,6 +79,12 @@ public partial class App : Application
         try
         {
             var log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoffeeFilter", "app-errors.log");
+
+            // Starts over past 1 MB, so a repeating error can't fill the disk
+            if (new FileInfo(log) is { Exists: true, Length: > 1_000_000 })
+            {
+                File.Delete(log);
+            }
             File.AppendAllText(log, $"{DateTime.Now:s} {ex}{Environment.NewLine}");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -136,7 +143,7 @@ public partial class App : Application
             _endingSession       = true;
             _runningAtSessionEnd = _running;
             // The proxy settings go back within milliseconds; open connections get 2 seconds
-            Core.Dispose(2000);
+            Core?.Dispose(2000);
             return;
         }
 
@@ -180,7 +187,13 @@ public partial class App : Application
     /// </summary>
     private void GiveUp(string message)
     {
-        _coreReady.TrySetException(new InvalidOperationException(message));
+        // Commands sent from now on get the same message, not the closed core's error
+        var error = new InvalidOperationException(message);
+        if (!_coreReady.TrySetException(error))
+        {
+            _coreReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _coreReady.SetException(error);
+        }
         Failed?.Invoke(message);
     }
 
@@ -189,10 +202,20 @@ public partial class App : Application
         try
         {
             var reply = await Core.WaitReadyAsync();
-            // Refused to start (another core already runs for this account): restarting won't help
+            // Refused to start (another core already runs for this account): restarting won't help.
+            // One that's still exiting (the app was just reopened) refuses too, so try once more.
             if (!reply.Ok && reply.Status is null)
             {
                 _coreRefused = true;
+                if (!_retriedRefusal)
+                {
+                    _retriedRefusal = true;
+                    Core.Dispose();
+                    await Task.Delay(3000);
+                    _coreRefused = false;
+                    StartCore(resumeBlocking);
+                    return;
+                }
                 GiveUp(reply.Error ?? "The filter core couldn't start.");
                 return;
             }
@@ -503,7 +526,6 @@ public partial class App : Application
     /// </summary>
     /// <param name="Action">"install" (a userscript page's Install button), "exclude" (the blocked page's Exclude button), or a notification's page ("main" or "problems").</param>
     /// <param name="Value">The script address, or the site name.</param>
-    private sealed record AppLink(string Action, string Value);
 
     /// <summary>
     /// The link that opened the app (coffee-filter://install?url=... or coffee-filter://exclude?host=...),
@@ -522,33 +544,7 @@ public partial class App : Application
             {
                 return null;
             }
-            if (string.IsNullOrEmpty(uri.Query))
-            {
-                return null;
-            }
-            var key = uri.Host switch
-            {
-                "install" => "url",
-                "exclude" => "host",
-                _ => null,
-            };
-            var value = key is null ? null : new Windows.Foundation.WwwFormUrlDecoder(uri.Query).FirstOrDefault(p => p.Name == key)?.Value;
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            // Any web page can make this link, so a site name must look like one before the
-            // consent dialog shows it (no sentences, no pages of text)
-            if (uri.Host == "exclude")
-            {
-                value = value.Trim().TrimStart('*', '.').TrimEnd('.').ToLowerInvariant();
-                if (value.Length is 0 or > 253 || !value.Contains('.') || !value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-'))
-                {
-                    return null;
-                }
-            }
-            return new AppLink(uri.Host, value);
+            return AppLink.Parse(uri.Host, uri.Query);
         }
         catch (Exception ex)
         {
@@ -581,11 +577,20 @@ public partial class App : Application
     public void Quit()
     {
         _quitting = true;
-        Shortcuts.Suspend();
-        Notifications.Unregister();
-        _tray?.Dispose();
-        _window?.Close();
-        Core.Dispose();
+
+        // Each step on its own: one that fails (no core, say) must not keep the app from exiting
+        Action[] steps = [() => Shortcuts?.Suspend(), Notifications.Unregister, () => _tray?.Dispose(), () => _window?.Close(), () => Core?.Dispose()];
+        foreach (var step in steps)
+        {
+            try
+            {
+                step();
+            }
+            catch (Exception ex)
+            {
+                LogError(ex);
+            }
+        }
         Exit();
     }
 

@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "coffee-filter-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adblock",
  "base64 0.22.1",
@@ -427,6 +427,7 @@ dependencies = [
  "socket2",
  "time",
  "tokio",
+ "tower-layer",
  "tower-service",
  "tracing",
  "tracing-subscriber",

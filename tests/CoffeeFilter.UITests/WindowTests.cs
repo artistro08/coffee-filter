@@ -329,8 +329,15 @@ public sealed class WindowTests(AppFixture app)
     {
         app.GoHome();
         app.FindButton("Add site").Patterns.Invoke.Pattern.Invoke();
-        Assert.NotNull(Retry.WhileNull(() => FindAnywhere("Add a site"), TimeSpan.FromSeconds(5)).Result);
-        CancelDialog();
+        try
+        {
+            Assert.NotNull(Retry.WhileNull(() => FindAnywhere("Add a site"), TimeSpan.FromSeconds(5)).Result);
+        }
+        finally
+        {
+            // Closed even when the check fails, so the next dialog test isn't blocked by it
+            CancelDialog();
+        }
     }
 
     [Fact]
@@ -338,8 +345,14 @@ public sealed class WindowTests(AppFixture app)
     {
         app.GoHome();
         app.FindButton("Add userscript").Patterns.Invoke.Pattern.Invoke();
-        Assert.NotNull(Retry.WhileNull(() => FindAnywhere("Web address of the .user.js file"), TimeSpan.FromSeconds(5)).Result);
-        CancelDialog();
+        try
+        {
+            Assert.NotNull(Retry.WhileNull(() => FindAnywhere("Web address of the .user.js file"), TimeSpan.FromSeconds(5)).Result);
+        }
+        finally
+        {
+            CancelDialog();
+        }
     }
 
     // =========================================================================

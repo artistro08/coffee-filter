@@ -11,10 +11,15 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
 # The AOT linker finds the C++ tools through vswhere.exe
-$env:PATH += ';C:\Program Files (x86)\Microsoft Visual Studio\Installer'
+$env:PATH += ";${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
 
 # CMake, NASM, and libclang for BoringSSL
 . "$PSScriptRoot\tools.ps1"
+
+# Both version numbers go up together (Windows refuses changed content under the same one)
+$version = ([xml](Get-Content "$root\app\Package.appxmanifest")).Package.Identity.Version
+$app     = @(([xml](Get-Content "$root\app\CoffeeFilter.csproj")).Project.PropertyGroup.Version | Where-Object { $_ })[0]
+if ($app -ne $version) { throw "app\CoffeeFilter.csproj says $app but the manifest says $version; bump both" }
 
 # Core
 Push-Location "$root\core"
@@ -32,7 +37,6 @@ try {
 }
 finally { Pop-Location }
 
-$version = ([xml](Get-Content "$root\app\Package.appxmanifest")).Package.Identity.Version
-$msix    = "$root\app\AppPackages\CoffeeFilter_${version}_x64_Test\CoffeeFilter_${version}_x64.msix"
+$msix    ="$root\app\AppPackages\CoffeeFilter_${version}_x64_Test\CoffeeFilter_${version}_x64.msix"
 if (-not (Test-Path $msix)) { throw "no package at $msix" }
 "built $msix"

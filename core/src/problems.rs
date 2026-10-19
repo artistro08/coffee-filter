@@ -144,7 +144,11 @@ impl Problems {
 /// Decide whether a hudsucker error is one Coffee Filter caused, and explain it.
 pub fn classify(message: &str, error: &str) -> Option<(&'static str, String)> {
     let lower = error.to_ascii_lowercase();
-    if message.contains("Failed to establish TLS connection") && lower.contains("alert") {
+    // Only alerts about the certificate itself; an old client that can't speak TLS 1.2
+    // (ProtocolVersion) or a protocol mismatch says nothing about our certificate
+    const CERTIFICATE_ALERTS: [&str; 7] =
+        ["unknownca", "badcertificate", "certificateunknown", "certificateexpired", "certificaterevoked", "unsupportedcertificate", "accessdenied"];
+    if message.contains("Failed to establish TLS connection") && lower.contains("alert") && CERTIFICATE_ALERTS.iter().any(|a| lower.contains(a)) {
         return Some(("app_rejected_certificate", "An app doesn't accept Coffee Filter's certificate (it checks for its own), so this site now connects without filtering until Coffee Filter restarts.".into()));
     }
     if message.contains("Failed to establish TLS connection") && lower.contains("handshake eof") {
@@ -266,6 +270,9 @@ mod tests {
     #[test]
     fn classifies_only_problems_we_cause() {
         assert_eq!(classify("Failed to establish TLS connection", "received fatal alert: UnknownCA").unwrap().0, "app_rejected_certificate");
+        assert_eq!(classify("Failed to establish TLS connection", "received fatal alert: BadCertificate").unwrap().0, "app_rejected_certificate");
+        assert!(classify("Failed to establish TLS connection", "received fatal alert: ProtocolVersion").is_none(), "an old client, not our certificate");
+        assert!(classify("Failed to establish TLS connection", "received fatal alert: NoApplicationProtocol").is_none());
         assert_eq!(classify("Failed to establish TLS connection", "tls handshake eof").unwrap().0, "app_hung_up");
         assert!(classify("Failed to forward request", "invalid peer certificate: UnknownIssuer").is_none(), "fails in the browser too");
         assert!(classify("Failed to establish TLS connection", "connection reset by peer").is_none(), "closed tab, not a rejection");

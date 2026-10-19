@@ -89,7 +89,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temp = path.as_os_str().to_owned();
     temp.push(".tmp");
     let temp = PathBuf::from(temp);
-    fs::write(&temp, bytes)?;
+
+    // On disk before the swap: NTFS journals the rename, not the data, so a power cut right
+    // after could otherwise leave an empty file in place of the old one
+    let mut file = fs::File::create(&temp)?;
+    io::Write::write_all(&mut file, bytes)?;
+    file.sync_all()?;
+    drop(file);
     fs::rename(&temp, path)
 }
 

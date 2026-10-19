@@ -114,6 +114,16 @@ fn curl(url: &str, headers: &[&str]) -> String {
     String::from_utf8(cmd.arg(url).output().unwrap().stdout).unwrap()
 }
 
+/// The proxy's answer to the tunnel request (CONNECT) itself, as curl reports it.
+fn connect_code(url: &str) -> String {
+    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\curl.exe");
+    let out  = Command::new(curl)
+        .args(["-s", "--max-time", "20", "-o", "NUL", "-w", "%{http_connect}", "-x", &format!("127.0.0.1:{PORT}"), url])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
 /// Load a page through the proxy in headless Chrome and return the DOM after scripts ran.
 /// Returns None when Chrome isn't installed.
 fn chrome_dom(url: &str) -> Option<String> {
@@ -216,6 +226,7 @@ fn proxy_end_to_end() {
         assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": true }))["ok"], true);
         assert_eq!(curl("https://self-signed.badssl.com/", &[]), "502", "bad upstream cert refused");
         assert_eq!(curl("https://expired.badssl.com/", &[]), "502", "expired upstream cert refused");
+        assert_eq!(curl("https://wrong.host.badssl.com/", &[]), "502", "a certificate for another name is refused");
         assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": false }))["ok"], true);
         let log = fs::read_to_string(profile.join(r"CoffeeFilter\debug.log")).unwrap_or_default();
         assert!(log.contains("upstream error https://self-signed.badssl.com/"), "{log}");
@@ -258,8 +269,12 @@ fn proxy_end_to_end() {
             assert!(!verifies(), "decrypted, so OpenSSL refuses our certificate");
 
             // Like Zen: the site it refused is tunneled from then on, so OpenSSL sees the real one
-            thread::sleep(Duration::from_millis(300));
-            assert!(verifies(), "tunneled after the refusal");
+            // (the refusal is noticed in the background, so give it a moment)
+            let tunneled = (0..20).any(|_| {
+                thread::sleep(Duration::from_millis(250));
+                verifies()
+            });
+            assert!(tunneled, "tunneled after the refusal");
         }
 
         // Connection problems Coffee Filter caused are reported per host
@@ -280,6 +295,9 @@ fn proxy_end_to_end() {
         let status = core.send(json!({ "cmd": "status" }))["status"].clone();
         assert!(status["blocked"].as_u64().unwrap() >= 1);
         assert!(status["allowed"].as_u64().unwrap() >= 1);
+
+        // A public name that points at this PC is refused for tunnels on other ports (DNS rebinding)
+        assert_eq!(connect_code("https://localtest.me:8443/"), "403", "localtest.me resolves to 127.0.0.1");
 
         // Bad input is rejected without killing the core
         assert_eq!(core.send(json!({ "cmd": "nope" }))["ok"], false);
@@ -303,6 +321,18 @@ fn proxy_end_to_end() {
         assert!(proxy_state().2.is_some_and(|p| p.starts_with(&format!("http://127.0.0.1:{PORT}/proxy-"))), "still ours until next launch");
         let (mut core, _) = Core::spawn(&profile);
         assert_eq!(proxy_state(), before);
+        drop(core.stdin.take());
+        let _ = core.child.wait();
+
+        // Crash with a damaged backup: the next launch can't put the old setting back, but it
+        // still takes ours out, so Windows isn't left pointing at a proxy that's gone
+        let (mut core, _) = Core::spawn(&profile);
+        assert_eq!(core.send(json!({ "cmd": "start" }))["ok"], true);
+        core.child.kill().unwrap();
+        let _ = core.child.wait();
+        fs::write(profile.join(r"CoffeeFilter\proxy-backup.json"), "{").unwrap();
+        let (mut core, _) = Core::spawn(&profile);
+        assert!(!proxy_state().2.is_some_and(|p| p.starts_with(&format!("http://127.0.0.1:{PORT}/proxy-"))), "ours is gone");
         drop(core.stdin.take());
         let _ = core.child.wait();
     });

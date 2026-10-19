@@ -446,7 +446,10 @@ fn is_private_ip(ip: IpAddr) -> bool {
             // 0.0.0.0/8 and 100.64.0.0/10 (Tailscale, carrier NAT) too, like the PAC script
             v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_broadcast() || v4.is_multicast() || a == 0 || (a == 100 && (64..128).contains(&b))
         }
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local(),
+        // Multicast and the old site-local range (fec0::/10) too
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local() || v6.is_multicast() || (v6.segments()[0] & 0xffc0) == 0xfec0
+        }
     }
 }
 
@@ -672,20 +675,23 @@ impl HttpHandler for Blocker {
             // Tunnels that won't be decrypted connect on their own, past our DNS check
             // (PublicOnly). Check here that a public name doesn't point at a local address, then
             // connect to the address that was checked: looking the name up again could give a
-            // different, local one (a name can change what it points to between lookups).
+            // different, local one (a name can change what it points to between lookups). Sites
+            // tunneled because an app refused our certificate are checked too: that list is
+            // learned at run time, not fixed.
+            let port = req.uri().port_u16().unwrap_or(443);
             if let Some(host) = req.uri().host().map(str::to_string)
-                && req.uri().port_u16() != Some(443)
+                && (port != 443 || self.shared.problems.passes_through(&host))
                 && !self.is_excluded_app(ctx).await
             {
-                let port = req.uri().port_u16().unwrap_or(443);
                 match self.resolve_public(&host, port).await {
                     Resolved::Local => return local_refused(),
-                    Resolved::Public(addr) => {
+                    // On 443 the name stays: the decision to tunnel is made by name
+                    Resolved::Public(addr) if port != 443 => {
                         if let Ok(uri) = addr.to_string().parse() {
                             *req.uri_mut() = uri;
                         }
                     }
-                    Resolved::Unchecked => {}
+                    _ => {}
                 }
             }
             return req.into();
@@ -712,11 +718,15 @@ impl HttpHandler for Blocker {
             req.headers_mut().remove("sec-websocket-extensions");
         }
 
-        // Excluded sites and apps over plain HTTP are left alone too: no blocking, no page changes
-        let excluded_site = is_excluded(&self.shared.exclusions.read().unwrap(), &host) || is_excluded(&sysproxy::SYSTEM_HOSTS, &host);
-        if excluded_site || self.is_excluded_app(ctx).await {
+        // What's never decrypted, and excluded apps, are left alone over plain HTTP too: no
+        // blocking, no page changes
+        let untouched = match self.tunnel_reason(&host) {
+            None if self.is_excluded_app(ctx).await => Some("excluded app"),
+            why => why,
+        };
+        if let Some(why) = untouched {
             if self.shared.trace.is_on() {
-                self.shared.trace.write(format_args!("{} {} untouched ({})", req.method(), without_query(&req.uri().to_string()), if excluded_site { "excluded site" } else { "excluded app" }));
+                self.shared.trace.write(format_args!("{} {} untouched ({why})", req.method(), without_query(&req.uri().to_string())));
             }
             return req.into();
         }

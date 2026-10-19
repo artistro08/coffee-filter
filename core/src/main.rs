@@ -90,6 +90,11 @@ struct App {
     reply_log:      Option<Value>,
 }
 
+/// A command's result from the downloads that failed along the way.
+fn done(errors: Vec<String>) -> Result<(), String> {
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+}
+
 /// Lowercase, strip `*.` and dots, and reject anything that isn't a plain hostname.
 fn normalize_host(host: &str) -> Option<String> {
     let host  = host.trim().trim_start_matches("*.").trim_matches('.').to_ascii_lowercase();
@@ -159,6 +164,10 @@ impl App {
         })
     }
 
+    fn save(&self) -> Result<(), String> {
+        self.config.save().map_err(|e| e.to_string())
+    }
+
     fn refresh_cert(&mut self) {
         self.cert_installed = ca::is_installed().unwrap_or(false);
         self.cert_renewal   = if self.cert_installed { ca::renewal_reason() } else { None };
@@ -178,7 +187,7 @@ impl App {
     fn save_apps(&mut self) -> Result<(), String> {
         *self.shared.apps.write().unwrap() = Arc::new(self.config.excluded_apps.clone());
         self.shared.app_cache.clear();
-        self.config.save().map_err(|e| e.to_string())
+        self.save()
     }
 
     /// Reload the enabled userscripts; returns downloads that failed along the way.
@@ -255,14 +264,12 @@ impl App {
 
         let pac_path = sysproxy::new_pac_path();
         *self.shared.pac.write().unwrap() = (pac_path.clone(), sysproxy::pac_script(self.config.port));
+        self.running = Some((tx, handle));
         if let Err(e) = sysproxy::enable(self.config.port, &pac_path) {
             // Don't leave a proxy running (and the port taken) that Windows isn't using
-            let _ = sysproxy::restore();
-            let _ = tx.send(());
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            let _ = self.stop().await;
             return Err(format!("Couldn't change the Windows proxy setting: {e}"));
         }
-        self.running = Some((tx, handle));
         Ok(())
     }
 
@@ -314,7 +321,7 @@ impl App {
                 errors.extend(script_errors);
                 errors.extend(self.rebuild().await);
                 errors.extend(self.reload_userscripts().await);
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
             Command::SetExclusions { hosts } => {
                 let mut kept: Vec<String> = hosts.iter().filter_map(|h| normalize_host(h)).collect();
@@ -324,7 +331,7 @@ impl App {
 
                 *self.shared.exclusions.write().unwrap() = kept.clone();
                 self.config.exclusions = kept;
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 if dropped.is_empty() {
                     Ok(())
                 } else {
@@ -338,7 +345,7 @@ impl App {
                     self.config.exclusions.sort();
                 }
                 *self.shared.exclusions.write().unwrap() = self.config.exclusions.clone();
-                self.config.save().map_err(|e| e.to_string())
+                self.save()
             }
             Command::AddExcludedApp { name, path, package } => {
                 // One line, at most 100 characters (program descriptions can be anything)
@@ -364,23 +371,23 @@ impl App {
             Command::SetList { name, enabled } => {
                 let list = self.config.lists.iter_mut().find(|l| l.name == name).ok_or("Unknown list.")?;
                 list.enabled = enabled;
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 let errors = self.rebuild().await;
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
             Command::AddList { name, url } => {
                 let list = new_list(&self.config.lists, &name, &url)?;
                 self.config.lists.push(list);
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 // Rebuild downloads lists that aren't cached yet
                 let errors = self.rebuild().await;
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
             Command::RemoveList { name } => {
                 self.config.lists.retain(|l| l.name != name);
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 let errors = self.rebuild().await;
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
             Command::Log { after } => {
                 self.shared.log.set(true);
@@ -393,7 +400,7 @@ impl App {
             }
             Command::SetDetailedLog { enabled } => {
                 self.config.detailed_log = enabled;
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 self.shared.trace.set(enabled);
                 Ok(())
             }
@@ -413,25 +420,25 @@ impl App {
                     return Err(format!("A userscript named \"{}\" is already added.", header.name));
                 }
                 self.config.userscripts.push(config::Userscript { name: header.name, url, enabled: true });
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 let errors = self.reload_userscripts().await;
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
             Command::SetUserscript { name, enabled } => {
                 let script = self.config.userscripts.iter_mut().find(|s| s.name == name).ok_or("Unknown userscript.")?;
                 script.enabled = enabled;
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 let errors = self.reload_userscripts().await;
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
             Command::RemoveUserscript { name } => {
                 if let Some(script) = self.config.userscripts.iter().find(|s| s.name == name) {
                     userscripts::forget(&script.url);
                 }
                 self.config.userscripts.retain(|s| s.name != name);
-                self.config.save().map_err(|e| e.to_string())?;
+                self.save()?;
                 let errors = self.reload_userscripts().await;
-                if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                done(errors)
             }
         }
     }

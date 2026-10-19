@@ -1,6 +1,6 @@
 [package]
 name = "coffee-filter-core"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 
 [dependencies]
@@ -25,6 +25,7 @@ sha2 = "0.10"
 socket2 = "0.6"
 time = "0.3.55"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "signal", "sync"] }
+tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }

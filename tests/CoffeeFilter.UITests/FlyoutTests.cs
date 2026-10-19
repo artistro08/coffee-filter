@@ -34,23 +34,28 @@ public sealed class FlyoutTests(AppFixture app)
         app.GoHome();
         app.Expand("Keyboard shortcuts");
         Picker("UpdateLists").Patterns.Invoke.Pattern.Invoke();
-
-        // PowerToys' dialog: titled after the setting, the keys area, Reset and Clear, Save and Cancel
-        Assert.NotNull(Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview")), TimeSpan.FromSeconds(5)).Result);
-        Assert.NotNull(app.Find("Update filter lists shortcut"));
-        Assert.NotNull(app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutReset")));
-        Assert.NotNull(app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutClear")));
-        Assert.NotNull(app.FindButton("Save"));
-
-        // Pressed keys show up as they're pressed (the keys area is named after them); canceled, so nothing is saved
-        using (Keyboard.Pressing(VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT))
+        try
         {
-            Keyboard.Type(VirtualKeyShort.KEY_X);
-        }
-        var shown = Retry.WhileFalse(() => app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview"))?.Name == "Ctrl+Shift+X", TimeSpan.FromSeconds(3)).Success;
-        Assert.True(shown, $"the picker didn't show Ctrl+Shift+X (it shows \"{app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview"))?.Name}\")");
+            // PowerToys' dialog: titled after the setting, the keys area, Reset and Clear, Save and Cancel
+            Assert.NotNull(Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview")), TimeSpan.FromSeconds(5)).Result);
+            Assert.NotNull(app.Find("Update filter lists shortcut"));
+            Assert.NotNull(app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutReset")));
+            Assert.NotNull(app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutClear")));
+            Assert.NotNull(app.FindButton("Save"));
 
-        app.FindButton("Cancel").Patterns.Invoke.Pattern.Invoke();
+            // Pressed keys show up as they're pressed (the keys area is named after them); canceled, so nothing is saved
+            using (Keyboard.Pressing(VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT))
+            {
+                Keyboard.Type(VirtualKeyShort.KEY_X);
+            }
+            var shown = Retry.WhileFalse(() => app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview"))?.Name == "Ctrl+Shift+X", TimeSpan.FromSeconds(3)).Success;
+            Assert.True(shown, $"the picker didn't show Ctrl+Shift+X (it shows \"{app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview"))?.Name}\")");
+        }
+        finally
+        {
+            // Canceled even when a check fails, so nothing is saved and later tests aren't blocked
+            app.Window.FindFirstDescendant(c => c.ByName("Cancel").And(c.ByControlType(ControlType.Button)))?.Patterns.Invoke.Pattern.Invoke();
+        }
         Assert.True(Retry.WhileNotNull(() => app.Window.FindFirstDescendant(c => c.ByAutomationId("ShortcutPreview")), TimeSpan.FromSeconds(5)).Success, "the picker didn't close");
     }
 

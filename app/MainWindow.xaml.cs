@@ -574,7 +574,7 @@ public sealed partial class MainWindow : Window
             CloseButtonText   = "Cancel",
             DefaultButton     = ContentDialogButton.Primary,
         };
-        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary)
         {
             return [];
         }
@@ -616,7 +616,7 @@ public sealed partial class MainWindow : Window
         // Only one dialog can be open at a time
         try
         {
-            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary)
             {
                 return;
             }
@@ -936,7 +936,7 @@ public sealed partial class MainWindow : Window
         _pickingApp = true;
         try
         {
-            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary || chosen is null)
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary || chosen is null)
             {
                 return;
             }
@@ -1108,27 +1108,6 @@ public sealed partial class MainWindow : Window
         if (attached)
         {
             AttachThreadInput(mine, front, false);
-        }
-    }
-
-    /// <summary>
-    /// Open a dialog. Only one can be open at a time, and one that was just closed still counts
-    /// while it animates away, so a quick second dialog would fail; this waits it out for up to
-    /// two seconds, then passes the error on.
-    /// </summary>
-    private static async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
-    {
-        const int AsyncNotStarted = unchecked((int)0x80000019);
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                return await dialog.ShowAsync();
-            }
-            catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == AsyncNotStarted && attempt < 20)
-            {
-                await Task.Delay(100);
-            }
         }
     }
 
@@ -1411,7 +1390,7 @@ public sealed partial class MainWindow : Window
                 DefaultButton     = ContentDialogButton.Primary,
             };
 
-            if (await ShowDialogAsync(dialog) == ContentDialogResult.Primary)
+            if (await Dialogs.ShowAsync(dialog) == ContentDialogResult.Primary)
             {
                 Expanded.Add("custom");
                 await BusyAsync(AddListButton, AddListRing, () => _app.RunAsync("add_list", new JsonObject { ["name"] = name.Text, ["url"] = url.Text }, lists: true));
@@ -1465,7 +1444,7 @@ public sealed partial class MainWindow : Window
         // Only one dialog can be open at a time
         try
         {
-            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary)
             {
                 return;
             }
@@ -1510,6 +1489,11 @@ public sealed partial class MainWindow : Window
 
     private void OnTrayToggled(object sender, RoutedEventArgs e)
     {
+        // Set once when the window opens; nothing changed, nothing to save
+        if (_app.Settings.ShowTrayIcon == TraySwitch.IsOn)
+        {
+            return;
+        }
         _app.Settings.ShowTrayIcon = TraySwitch.IsOn;
         _app.Settings.Save();
         _app.SetTrayVisible(TraySwitch.IsOn);

@@ -93,6 +93,24 @@ public sealed class CoreClientTests : IDisposable
     }
 
     [Fact]
+    public async Task DamagedSettingsAreKeptAsideAndDefaultsUsed()
+    {
+        await _core.WaitReadyAsync();
+        _core.Dispose();
+
+        var dir = Path.Combine(_profile, "CoffeeFilter");
+        File.WriteAllText(Path.Combine(dir, "config.json"), "{ not settings");
+        using var core = new CoreClient();
+        var ready = await core.WaitReadyAsync();
+
+        // Started anyway, said so, and kept the damaged file for the user
+        Assert.False(ready.Ok);
+        Assert.Contains("damaged", ready.Error);
+        Assert.True(File.Exists(Path.Combine(dir, "config.json.bad")));
+        Assert.NotEmpty(ready.Status!.Lists);
+    }
+
+    [Fact]
     public async Task DetailedLogTurnsOnAndOffAndIsSaved()
     {
         var ready = await _core.WaitReadyAsync();

@@ -7,25 +7,30 @@
 #        NASM (https://www.nasm.us/, or: winget install NASM.NASM), and
 #        LLVM for bindgen's libclang (https://llvm.org/, or: winget install LLVM.LLVM).
 
-# Visual Studio's own CMake, newest install first
-$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+# Visual Studio's own CMake, newest install first (previews too)
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not $env:CMAKE -and (Test-Path $vswhere)) {
-    $cmake = & $vswhere -all -products '*' -property installationPath |
+    $cmake = & $vswhere -all -prerelease -sort -products '*' -property installationPath |
         ForEach-Object { Join-Path $_ 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' } |
         Where-Object { Test-Path $_ } |
         Select-Object -First 1
     if ($cmake) { $env:CMAKE = $cmake }
 }
+if (-not $env:CMAKE) { $env:CMAKE = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source }
 
 # NASM, from a user or machine install
 if (-not $env:ASM_NASM) {
     $nasm = @("$env:LOCALAPPDATA\bin\NASM\nasm.exe", "$env:ProgramFiles\NASM\nasm.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $nasm) { $nasm = (Get-Command nasm.exe -ErrorAction SilentlyContinue).Source }
     if ($nasm) { $env:ASM_NASM = $nasm }
 }
 
 # libclang for the BoringSSL bindings
-if (-not $env:LIBCLANG_PATH -and (Test-Path "$env:ProgramFiles\LLVM\bin\libclang.dll")) {
-    $env:LIBCLANG_PATH = "$env:ProgramFiles\LLVM\bin"
+if (-not $env:LIBCLANG_PATH) {
+    $clang = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
+    $env:LIBCLANG_PATH = @("$env:ProgramFiles\LLVM\bin", $(if ($clang) { Split-Path $clang })) |
+        Where-Object { $_ -and (Test-Path "$_\libclang.dll") } |
+        Select-Object -First 1
 }
 
 foreach ($need in 'CMAKE', 'ASM_NASM', 'LIBCLANG_PATH') {

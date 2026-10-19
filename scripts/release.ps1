@@ -13,25 +13,35 @@
 param([Parameter(Mandatory)][string]$Notes)
 
 $ErrorActionPreference = 'Stop'
-$root       = Split-Path $PSScriptRoot -Parent
-$thumbprint = '731870AC454C0A65DBFBF7C72B6A28CA10FB346B'
+$root = Split-Path $PSScriptRoot -Parent
+if (-not (Test-Path $Notes)) { throw "no release notes at $Notes" }
 
-# Release Gate: nothing ships unless everything passes
-& "$PSScriptRoot\test.ps1"
-if ($LASTEXITCODE -ne 0) { throw 'tests failed; no release' }
+# The quick checks first, so a mistake doesn't wait for the whole test suite
+$csproj     = [xml](Get-Content "$root\app\CoffeeFilter.csproj")
+$full       = ([xml](Get-Content "$root\app\Package.appxmanifest")).Package.Identity.Version
+$version    = ($full -split '\.')[0..2] -join '.'
+$thumbprint = @($csproj.Project.PropertyGroup.PackageCertificateThumbprint | Where-Object { $_ })[0]
+$app        = @($csproj.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+$core       = (Select-String -Path "$root\core\Cargo.toml" -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+if (-not $full.EndsWith('.0')) { throw "a release's fourth number is 0 (manifest says $full)" }
+if ($app -ne $full) { throw "app\CoffeeFilter.csproj says $app, the manifest says $full" }
+if ($core -ne $version) { throw "core\Cargo.toml says $core, the release is $version" }
 
-# What's released must be what's on GitHub
+# What's released must be what's on GitHub, under a tag that's still free
 Push-Location $root
 try {
     if (git status --porcelain) { throw 'uncommitted changes; commit and push first' }
     git fetch -q origin
     if ((git rev-parse HEAD) -ne (git rev-parse origin/main)) { throw 'main is not pushed; push first' }
+    if (git ls-remote --tags origin "refs/tags/v$version") { throw "tag v$version already exists" }
 }
 finally { Pop-Location }
 
-$full    = ([xml](Get-Content "$root\app\Package.appxmanifest")).Package.Identity.Version
-$version = ($full -split '\.')[0..2] -join '.'
-$msix    = "$root\app\AppPackages\CoffeeFilter_${full}_x64_Test\CoffeeFilter_${full}_x64.msix"
+# Release Gate: nothing ships unless everything passes
+& "$PSScriptRoot\test.ps1"
+if ($LASTEXITCODE -ne 0) { throw 'tests failed; no release' }
+
+$msix = "$root\app\AppPackages\CoffeeFilter_${full}_x64_Test\CoffeeFilter_${full}_x64.msix"
 if ((Get-AuthenticodeSignature $msix).Status -ne 'Valid') { throw "$msix isn't validly signed" }
 
 # Release files, named without the fourth number

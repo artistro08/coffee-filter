@@ -189,7 +189,21 @@ public sealed class CoreClient : IDisposable
         {
             while (await _process.StandardOutput.ReadLineAsync() is { } line)
             {
-                var reply = JsonSerializer.Deserialize(line, CoreJson.Default.CoreReply)!;
+                // A line that isn't a reply is skipped; giving up here would leave a running core
+                // nobody can talk to, which the restart never notices
+                CoreReply? reply;
+                try
+                {
+                    reply = JsonSerializer.Deserialize(line, CoreJson.Default.CoreReply);
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+                if (reply is null)
+                {
+                    continue;
+                }
                 if (reply is { Event: "problem", Problem: { } problem })
                 {
                     ProblemFound?.Invoke(problem);
@@ -198,17 +212,24 @@ public sealed class CoreClient : IDisposable
                 _replies.Writer.TryWrite(reply);
             }
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException or JsonException)
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
         {
-            // Pipe closed or garbled: same as the core stopping
+            // Pipe closed: same as the core stopping
         }
         _replies.Writer.TryComplete();
     }
 
     /// <summary>
+    /// How long a reply may take before the core counts as stuck. The certificate commands wait
+    /// for the admin prompt, and the first "ready" line for every list to download.
+    /// </summary>
+    private static readonly TimeSpan SlowLimit = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan Limit     = TimeSpan.FromMinutes(3);
+
+    /// <summary>
     /// Waits for the core's "ready" line, sent once filter lists are loaded.
     /// </summary>
-    public async Task<CoreReply> WaitReadyAsync() => await ReadReplyAsync();
+    public async Task<CoreReply> WaitReadyAsync() => await ReadReplyAsync(SlowLimit);
 
     /// <summary>
     /// Sends one command (e.g. "start", "set_list") with optional snake_case args and returns the reply.
@@ -223,7 +244,7 @@ public sealed class CoreClient : IDisposable
         {
             await _process.StandardInput.WriteLineAsync(payload.ToJsonString());
             await _process.StandardInput.FlushAsync();
-            return await ReadReplyAsync();
+            return await ReadReplyAsync(cmd is "install_cert" or "renew_cert" or "uninstall_cert" ? SlowLimit : Limit);
         }
         finally
         {
@@ -231,15 +252,30 @@ public sealed class CoreClient : IDisposable
         }
     }
 
-    private async Task<CoreReply> ReadReplyAsync()
+    private async Task<CoreReply> ReadReplyAsync(TimeSpan limit)
     {
+        using var timeout = new CancellationTokenSource(limit);
         try
         {
-            return await _replies.Reader.ReadAsync();
+            return await _replies.Reader.ReadAsync(timeout.Token);
         }
         catch (System.Threading.Channels.ChannelClosedException)
         {
             throw new InvalidOperationException("The filter core stopped unexpectedly.");
+        }
+        catch (OperationCanceledException)
+        {
+            // Stuck, not stopped: end it, so the app's restart takes over instead of every
+            // command waiting behind this one forever
+            try
+            {
+                _process.Kill();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                // Already gone
+            }
+            throw new InvalidOperationException("The filter core stopped responding, so it's being restarted.");
         }
     }
 

@@ -53,3 +53,4 @@ if (-not $SkipUi) {
 }
 
 'ALL PASSED'
+exit 0

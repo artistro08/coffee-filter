@@ -338,7 +338,7 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
             }
         }
 
-        _c.IsWarningAltGr = _internalSettings.Ctrl && _internalSettings.Alt && !_internalSettings.Win && (_internalSettings.Code > 0);
+        _c.IsWarningAltGr = _internalSettings.IsAltGrRisk;
     }
 
     // Leaf: the other shortcut, or Windows or another app, may hold it; a taken combination can't be saved
@@ -493,14 +493,14 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
 
             // The logic is: warning should be visible if the shortcut contains Alt AND contains Ctrl AND NOT contains Win.
             // Additional key must be present, as this is a valid, previously used shortcut shown at dialog open. Check for presence of non-modifier-key is not necessary therefore
-            _c.IsWarningAltGr = HotkeySettings is { Ctrl: true, Alt: true, Win: false };
+            _c.IsWarningAltGr = HotkeySettings?.IsAltGrRisk == true;
 
             _window = Win32Interop.GetWindowFromWindowId(XamlRoot.ContentIslandEnvironment.AppWindowId);
             DialogOpening?.Invoke(this, EventArgs.Empty);
             _shortcutDialog.Title = DialogTitle;
             _shortcutDialog.XamlRoot = this.XamlRoot;
             _shortcutDialog.RequestedTheme = this.ActualTheme;
-            await _shortcutDialog.ShowAsync();
+            await Dialogs.ShowAsync(_shortcutDialog);
         }
         catch (Exception)
         {
@@ -516,14 +516,14 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
         {
             try
             {
-                await new ContentDialog
+                await Dialogs.ShowAsync(new ContentDialog
                 {
                     XamlRoot = root,
                     RequestedTheme = ActualTheme,
                     Title = DialogTitle,
                     Content = "Coffee Filter couldn't listen to the keyboard, so the shortcut can't be changed right now. Try again.",
                     CloseButtonText = "OK",
-                }.ShowAsync();
+                });
             }
             catch (Exception)
             {
