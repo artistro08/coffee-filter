@@ -667,6 +667,14 @@ public partial class App : Application
         _trayMenu?.SetBlocking(running, certInstalled);
     }
 
+    /// <summary>
+    /// Shows or hides the tray icon, making it the first time it's shown.
+    /// </summary>
+    /// <remarks>
+    /// Hidden through the icon's own Show/Hide, not the control's Visibility: H.NotifyIcon's
+    /// Visibility callback unboxes the value in a way Native AOT rejects ("Specified cast is not
+    /// valid"), so the icon never went away.
+    /// </remarks>
     public void SetTrayVisible(bool visible)
     {
         if (_tray is null)
@@ -678,7 +686,14 @@ public partial class App : Application
             CreateTray();
             _tray!.ForceCreate();
         }
-        _tray!.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (visible)
+        {
+            _tray!.TrayIcon.Show();
+        }
+        else
+        {
+            _tray!.TrayIcon.Hide();
+        }
     }
 
     /// <summary>
