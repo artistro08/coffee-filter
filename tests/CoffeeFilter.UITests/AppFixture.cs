@@ -12,13 +12,20 @@ namespace CoffeeFilter.UITests;
 /// Opens the installed Coffee Filter app (or uses the running one) and hands its main window
 /// to the tests. The tests look, open pages and groups, and cancel dialogs. One test excludes
 /// a Store app you haven't excluded and deletes it again, so your settings end as they began.
-/// The window goes back to its original size afterward.
+/// The tray and flyout tests need Show tray icon and Use tray flyout on; whichever you turned off
+/// is turned on for the run and off again afterward. The window goes back to its original size.
 /// </summary>
 public sealed class AppFixture : IDisposable
 {
+    /// <summary>
+    /// Switches the tests need on, with the app.json setting each one saves to.
+    /// </summary>
+    private static readonly (string Name, string Setting)[] NeededOn = [("Show tray icon", "ShowTrayIcon"), ("Use tray flyout", "UseFlyout")];
+
     private readonly UIA3Automation _automation = new();
     private readonly Application _app;
     private readonly System.Drawing.Rectangle _originalBounds;
+    private readonly List<string> _turnedOn = [];
 
     public Window Window { get; }
 
@@ -48,6 +55,39 @@ public sealed class AppFixture : IDisposable
         // Wait for the filter lists to load (the main page shows its sections then)
         Retry.WhileNull(() => Window.FindFirstDescendant(c => c.ByName("Protection")), TimeSpan.FromSeconds(60), throwOnTimeout: true);
         _originalBounds = Window.BoundingRectangle;
+
+        // Turn On What the Tests Need
+        foreach (var (name, setting) in NeededOn)
+        {
+            if (SetSwitch(name, setting, on: true))
+            {
+                _turnedOn.Add(name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sets a settings switch and waits until app.json has it. Returns whether it had to change.
+    /// </summary>
+    private bool SetSwitch(string name, string setting, bool on)
+    {
+        var toggle = Retry.WhileNull(() => Window.FindAllDescendants(c => c.ByName(name)).FirstOrDefault(e => e.Patterns.Toggle.IsSupported), TimeSpan.FromSeconds(5)).Result
+            ?? throw new InvalidOperationException($"No {name} switch.");
+        if ((toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On) == on)
+        {
+            return false;
+        }
+        toggle.Patterns.Toggle.Pattern.Toggle();
+        bool Saved()
+        {
+            using var json = ReadAppSettings();
+            return json.RootElement.TryGetProperty(setting, out var value) && value.GetBoolean() == on;
+        }
+        if (!Retry.WhileFalse(Saved, TimeSpan.FromSeconds(3)).Success)
+        {
+            throw new InvalidOperationException($"{name} didn't save as {(on ? "on" : "off")}.");
+        }
+        return true;
     }
 
     /// <summary>
@@ -131,6 +171,13 @@ public sealed class AppFixture : IDisposable
     public void Dispose()
     {
         GoHome();
+
+        // Back Off, the Way You Had Them
+        foreach (var (name, setting) in NeededOn.Where(s => _turnedOn.Contains(s.Name)))
+        {
+            SetSwitch(name, setting, on: false);
+        }
+
         var transform = Window.Patterns.Transform.PatternOrDefault;
         if (transform is not null && _originalBounds.Width > 0)
         {

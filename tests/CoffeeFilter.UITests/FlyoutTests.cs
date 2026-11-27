@@ -142,7 +142,7 @@ public sealed class FlyoutTests(AppFixture app)
     {
         app.GoHome();
         var toggle = FlyoutSwitch();
-        Assert.True(toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On, "Turn on Use tray flyout in Coffee Filter to run this test.");
+        Assert.True(toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On, "Use tray flyout is off; AppFixture turns it on for the run.");
         try
         {
             toggle.Patterns.Toggle.Pattern.Toggle();

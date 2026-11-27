@@ -45,7 +45,7 @@ public sealed class TrayTests(AppFixture app)
         var toggle = Retry.WhileNull(() => app.Window.FindAllDescendants(c => c.ByName("Show tray icon")).FirstOrDefault(e => e.Patterns.Toggle.IsSupported), TimeSpan.FromSeconds(5)).Result
             ?? throw new InvalidOperationException("No Show tray icon switch.");
         bool On() => toggle.Patterns.Toggle.Pattern.ToggleState.Value == ToggleState.On;
-        Assert.True(On(), "the tray icon is off before the test; turn it on first");
+        Assert.True(On(), "Show tray icon is off; AppFixture turns it on for the run");
         Assert.True(IconShown(), "the tray icon isn't showing before the test");
         try
         {

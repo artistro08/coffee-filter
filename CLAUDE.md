@@ -77,7 +77,7 @@ In order, stopping at the first failure:
 4. `dotnet test` in `tests/CoffeeFilter.Tests` (app-to-core)
 5. `dotnet test` in `tests/CoffeeFilter.UITests` (UI, against the installed app; the script refuses if the installed version isn't the one in the manifest)
 
-UI tests open pages, groups, and dialogs and cancel them. One test (`ExcludingAStoreAppListsItAndDeleteRemovesIt`) excludes a Store app the user hasn't excluded and deletes it again, undoing in `finally` and failing loudly if it can't. Launching the app also turns blocking on if it was on last time. They need a few Store apps installed.
+UI tests open pages, groups, and dialogs and cancel them. One test (`ExcludingAStoreAppListsItAndDeleteRemovesIt`) excludes a Store app the user hasn't excluded and deletes it again, undoing in `finally` and failing loudly if it can't. Launching the app also turns blocking on if it was on last time. `AppFixture` turns on **Show tray icon** and **Use tray flyout** for the run if the owner turned them off, and off again at the end. They need a few Store apps installed.
 
 Every change gets a test that would have caught it: a core unit test for logic, an app-to-core test for command behavior, a UI test for anything on screen.
 
