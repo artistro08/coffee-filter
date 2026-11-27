@@ -53,7 +53,7 @@ struct Backup {
 pub fn new_pac_path() -> String {
     let mut bytes = [0u8; 12];
     getrandom::fill(&mut bytes).expect("OS random number generator");
-    format!("/proxy-{}.pac", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    format!("/proxy-{}.pac", crate::config::hex(&bytes))
 }
 
 /// Zen's list of sites that are never decrypted, copied as is from

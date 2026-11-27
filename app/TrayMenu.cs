@@ -28,7 +28,7 @@ public sealed partial class TrayMenu
     // Off until the core's first status says otherwise
     private readonly MenuFlyoutItem _blocking = new() { Text = "Ad blocking is off", Icon = new FontIcon { Glyph = "\uE711" } };
     private readonly nint _hwnd;
-    private POINT _anchor;
+    private Native.POINT _anchor;
     private SizeInt32 _size = new(320, 200);
     private bool _refit;
     private long _shownAt;
@@ -96,7 +96,7 @@ public sealed partial class TrayMenu
             // to whatever was active before. Take it back instead of closing the menu.
             if (Environment.TickCount64 - _shownAt < FocusGraceMs)
             {
-                WindowUtilities.SetForegroundWindow(_hwnd);
+                Native.SetForegroundWindow(_hwnd);
                 return;
             }
             _flyout.Hide();
@@ -125,18 +125,8 @@ public sealed partial class TrayMenu
     /// </summary>
     public void Show()
     {
-        GetCursorPos(out _anchor);
-        if (!IsShellOverflow(GetForegroundWindow()))
-        {
-            ShowNow();
-            return;
-        }
-
-        var timer = _window.DispatcherQueue.CreateTimer();
-        timer.Interval    = TimeSpan.FromMilliseconds(150);
-        timer.IsRepeating = false;
-        timer.Tick       += (_, _) => ShowNow();
-        timer.Start();
+        Native.GetCursorPos(out _anchor);
+        PopupWindow.AfterOverflowCloses(_window.DispatcherQueue, ShowNow);
     }
 
     private void ShowNow()
@@ -146,7 +136,7 @@ public sealed partial class TrayMenu
         Place();
         // Activate (not just ShowWindow): WinUI only loads a window's content once it's activated
         _window.Activate();
-        WindowUtilities.SetForegroundWindow(_hwnd);
+        Native.SetForegroundWindow(_hwnd);
 
         if (_root.IsLoaded)
         {
@@ -225,53 +215,16 @@ public sealed partial class TrayMenu
     private const uint ABM_GETTASKBARPOS = 5;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct APPBARDATA
     {
         public uint cbSize;
         public nint hWnd;
         public uint uCallbackMessage;
         public uint uEdge;
-        public RECT rc;
+        public Native.RECT rc;
         public nint lParam;
     }
 
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out POINT point);
-
     [LibraryImport("shell32.dll")]
     private static partial nuint SHAppBarMessage(uint message, ref APPBARDATA data);
-
-    [LibraryImport("user32.dll")]
-    internal static partial nint GetForegroundWindow();
-
-    [LibraryImport("user32.dll", EntryPoint = "GetClassNameW")]
-    private static unsafe partial int GetClassName(nint hwnd, char* name, int max);
-
-    /// <summary>
-    /// The Windows 11 hidden-icons panel (or the classic overflow window).
-    /// </summary>
-    internal static unsafe bool IsShellOverflow(nint hwnd)
-    {
-        var name   = stackalloc char[64];
-        var length = GetClassName(hwnd, name, 64);
-        var cls    = new string(name, 0, length);
-        return cls is "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
-    }
 }

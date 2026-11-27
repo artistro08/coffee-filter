@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text.Json.Nodes;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -34,6 +35,11 @@ public sealed partial class FlyoutWindow : Window
     /// How long a success message stays in the flyout before it goes away. Errors stay.
     /// </summary>
     private static readonly TimeSpan MessageDuration = TimeSpan.FromSeconds(4);
+
+    /// <summary>
+    /// Shown when a command gets no reply at all.
+    /// </summary>
+    private const string NoReply = "The filter core isn't responding. Open Settings for details.";
 
     // Fluent motion: https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing
     private static readonly TimeSpan EnterDuration = TimeSpan.FromMilliseconds(250);
@@ -109,10 +115,11 @@ public sealed partial class FlyoutWindow : Window
 
         // Bind to Event Listeners
         // Live resize: the panel's height animates to the content's, and the region follows the
-        // panel. The region updates after every layout pass, because a hidden window lays out
-        // only once it's shown again.
+        // panel whenever it or the window changes size (a hidden window lays out only once it's
+        // shown again, and these fire then)
         PanelContent.SizeChanged += (_, _) => ResizePanel(animate: _isOpen);
-        WindowRoot.LayoutUpdated += (_, _) => ClipToPanel();
+        SlideHost.SizeChanged    += (_, _) => ClipToPanel();
+        WindowRoot.SizeChanged   += (_, _) => ClipToPanel();
         _app.Changed             += OnAppChanged;
         AppWindow.Closing        += (_, e) =>
         {
@@ -130,7 +137,7 @@ public sealed partial class FlyoutWindow : Window
             // back to whatever was active before. Take it back instead of closing.
             if (Environment.TickCount64 - _shownAt < FocusGraceMs)
             {
-                H.NotifyIcon.Core.WindowUtilities.SetForegroundWindow(_hwnd);
+                Native.SetForegroundWindow(_hwnd);
                 return;
             }
             HideFlyout();
@@ -160,16 +167,7 @@ public sealed partial class FlyoutWindow : Window
 
         // From the hidden-icons panel, wait for the panel to close first, otherwise it takes
         // focus back the moment the flyout opens
-        if (!TrayMenu.IsShellOverflow(TrayMenu.GetForegroundWindow()))
-        {
-            ShowFlyout(atCursor);
-            return;
-        }
-        var timer = DispatcherQueue.CreateTimer();
-        timer.Interval    = TimeSpan.FromMilliseconds(150);
-        timer.IsRepeating = false;
-        timer.Tick       += (_, _) => ShowFlyout(atCursor);
-        timer.Start();
+        PopupWindow.AfterOverflowCloses(DispatcherQueue, () => ShowFlyout(atCursor));
     }
 
     /// <summary>
@@ -206,7 +204,7 @@ public sealed partial class FlyoutWindow : Window
             AppWindow.Show(true);
         }
         Activate();
-        H.NotifyIcon.Core.WindowUtilities.SetForegroundWindow(_hwnd);
+        Native.SetForegroundWindow(_hwnd);
 
         // WinUI loads a window's content only once it's first activated, so the very first
         // open waits for that to know how far to slide
@@ -346,29 +344,18 @@ public sealed partial class FlyoutWindow : Window
             return;
         }
 
-        SaveSiteButton.IsEnabled = false;
-        AddSiteRing.IsActive     = true;
-        AddSiteRing.Visibility   = Visibility.Visible;
         HideMessage();
-        try
+        await Busy.RunAsync(SaveSiteButton, AddSiteRing, async () =>
         {
-            var reply = await _app.RunAsync("add_exclusion", new System.Text.Json.Nodes.JsonObject { ["host"] = host }, showErrors: false, lists: true);
+            var reply = await _app.RunAsync("add_exclusion", new JsonObject { ["host"] = host }, showErrors: false, lists: true);
             if (reply is { Ok: true })
             {
                 ShowAddSite(false);
                 ShowMessage($"{host} is excluded. Reload its page to apply.", error: false);
+                return;
             }
-            else
-            {
-                ShowMessage(reply?.Error ?? "The filter core isn't responding. Open Settings for details.", error: true);
-            }
-        }
-        finally
-        {
-            SaveSiteButton.IsEnabled = true;
-            AddSiteRing.IsActive     = false;
-            AddSiteRing.Visibility   = Visibility.Collapsed;
-        }
+            ShowMessage(reply?.Error ?? NoReply, error: true);
+        });
     }
 
     private async void OnBlockingToggled(object sender, RoutedEventArgs e)
@@ -381,34 +368,23 @@ public sealed partial class FlyoutWindow : Window
         var reply = await _app.RunAsync(BlockingSwitch.IsOn ? "start" : "stop", showErrors: false);
         if (reply is not { Ok: true })
         {
-            ShowMessage(reply?.Error ?? "The filter core isn't responding. Open Settings for details.", error: true);
+            ShowMessage(reply?.Error ?? NoReply, error: true);
         }
     }
 
     private async void OnUpdateClicked(object sender, RoutedEventArgs e)
     {
-        UpdateButton.IsEnabled  = false;
-        UpdateRing.IsActive     = true;
-        UpdateRing.Visibility   = Visibility.Visible;
         HideMessage();
-        try
+        await Busy.RunAsync(UpdateButton, UpdateRing, async () =>
         {
             var reply = await _app.RunAsync("update_lists", showErrors: false, lists: true);
             if (reply is { Ok: true })
             {
                 ShowMessage("Lists are up to date.", error: false);
+                return;
             }
-            else
-            {
-                ShowMessage(reply?.Error ?? "The filter core isn't responding. Open Settings for details.", error: true);
-            }
-        }
-        finally
-        {
-            UpdateButton.IsEnabled = true;
-            UpdateRing.IsActive    = false;
-            UpdateRing.Visibility  = Visibility.Collapsed;
-        }
+            ShowMessage(reply?.Error ?? NoReply, error: true);
+        });
     }
 
     /// <summary>

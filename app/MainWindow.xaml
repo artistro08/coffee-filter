@@ -45,7 +45,7 @@
                 <!-- Messages -->
                 <InfoBar x:Name="Message" IsOpen="False" IsClosable="True" />
                 <StackPanel x:Name="Loading" Orientation="Horizontal" Spacing="12" Margin="0,16">
-                    <ProgressRing IsActive="True" Width="20" Height="20" />
+                    <ProgressRing x:Name="LoadingRing" IsActive="True" Width="20" Height="20" />
                     <TextBlock Text="Loading filter lists…" VerticalAlignment="Center" />
                 </StackPanel>
 

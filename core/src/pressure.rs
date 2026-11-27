@@ -61,6 +61,14 @@ pub fn below_normal<T>(work: impl FnOnce() -> T) -> T {
     work()
 }
 
+/// What's cheap to rebuild: which app owns each connection, the live log, and the site
+/// certificates with their TLS sessions (remade on the next visit, a few milliseconds each).
+fn drop_caches(shared: &Shared) {
+    shared.app_cache.clear();
+    shared.log.trim();
+    shared.leaves.clear();
+}
+
 /// Watch for Windows' low-memory signal on a thread of its own. When it comes, drop caches
 /// that are cheap to rebuild, at most once a minute. (Handing back the whole working set
 /// would only make the next requests page the proxy back in while memory is still short.)
@@ -75,8 +83,7 @@ pub fn watch_memory(shared: Arc<Shared>) {
             if unsafe { WaitForSingleObject(low, INFINITE) } != WAIT_OBJECT_0 {
                 break;
             }
-            shared.app_cache.clear();
-            shared.log.trim();
+            drop_caches(&shared);
             // The signal stays on while memory is low; don't spin on it
             std::thread::sleep(Duration::from_secs(60));
         }
@@ -88,6 +95,20 @@ pub fn watch_memory(shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_memory_drops_the_site_certificates() {
+        use hudsucker::{certificate_authority::CertificateAuthority, hyper::http::uri::Authority};
+
+        let shared    = Shared::for_tests();
+        let authority = crate::ca::tests::authority(shared.leaves.clone());
+        let runtime   = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(authority.gen_server_config(&Authority::from_static("a.com:443")));
+        assert_eq!(shared.leaves.len(), 1);
+
+        drop_caches(&shared);
+        assert_eq!(shared.leaves.len(), 0);
+    }
 
     #[test]
     fn below_normal_work_returns_its_result_and_resets_priority() {

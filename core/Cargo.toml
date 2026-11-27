@@ -19,7 +19,8 @@ regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rustls-platform-verifier = "0.7"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# preserve_order: a response with ad entries pruned (prune.rs) keeps its keys in the site's order
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1_smol = { version = "1.0.1", features = ["std"] }
 sha2 = "0.10"
 socket2 = "0.6"

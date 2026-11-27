@@ -5,7 +5,10 @@
 //! small scripts; a proxy does the same by adding one `<style>` and one `<script>`
 //! right after `<head>` in every HTML page, streamed so pages don't wait on it.
 //!
-//! - Hide rules (`##`) become CSS.
+//! - Hide rules (`##`) for the site become CSS.
+//! - Generic class and id rules (`##.ad`, `###banner`, for every site) are too many to send
+//!   with each page, so the page script (generic.js) asks for the ones matching the names
+//!   the page actually uses, on a random same-site path the proxy answers itself.
 //! - Style and advanced rules (`:style()`, `:has-text()`, `:upward()`, ...) run in a
 //!   small script (procedural.js).
 //! - Scriptlets (`##+js(...)` and AdGuard's `#%#//scriptlet(...)`) come from AdGuard's
@@ -30,6 +33,7 @@ use hudsucker::{
 };
 use http_body_util::BodyDataStream;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 /// Permission granted to trusted lists; required by AdGuard's `trusted-*` scriptlets.
 pub const TRUSTED: PermissionMask = PermissionMask::from_bits(0b1);
@@ -42,11 +46,11 @@ const SCRIPTLETS_SHA256: &str = "5c76ecdb58ecaf975df54aa447e2cc5db762330eab3d334
 /// Accept the scriptlet library only if it's exactly the pinned file.
 pub fn verify_library(bytes: &[u8]) -> Result<(), &'static str> {
     use sha2::{Digest, Sha256};
-    let hash: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
-    if hash == SCRIPTLETS_SHA256 { Ok(()) } else { Err("scriptlet library doesn't match the pinned version") }
+    if crate::config::hex(&Sha256::digest(bytes)) == SCRIPTLETS_SHA256 { Ok(()) } else { Err("scriptlet library doesn't match the pinned version") }
 }
 
 const PROCEDURAL_JS: &str = include_str!("procedural.js");
+const GENERIC_JS: &str    = include_str!("generic.js");
 
 // =========================================================================
 // ADGUARD SYNTAX
@@ -57,7 +61,13 @@ const PROCEDURAL_JS: &str = include_str!("procedural.js");
 /// - `example.com#%#//scriptlet('name', 'a', 'b')` becomes `example.com##+js(name, a, b)`
 /// - `example.com#$#.ad { display: none !important; }` becomes `example.com##.ad:style(display: none !important;)`
 /// - Raw JavaScript rules (`#%#` without `//scriptlet`) are dropped: they're arbitrary code from a list.
-pub fn translate_adguard(text: &str) -> String {
+///
+/// Most lists have no AdGuard-only rules at all; those are handed back as they are, without
+/// a copy.
+pub fn translate_adguard(text: String) -> String {
+    if !text.contains("#%#") && !text.contains("#@%#") && !text.contains("#$") && !text.contains("#@$") {
+        return text;
+    }
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
         if let Some(rule) = translate_line(line) {
@@ -68,8 +78,10 @@ pub fn translate_adguard(text: &str) -> String {
     out
 }
 
-fn translate_line(line: &str) -> Option<String> {
-    let Some(at) = line.find('#') else { return Some(line.to_string()) };
+/// One rule in uBO syntax, borrowed when it needs no change; None drops it (raw JavaScript,
+/// or AdGuard syntax too broken to translate).
+fn translate_line(line: &str) -> Option<Cow<'_, str>> {
+    let Some(at) = line.find('#') else { return Some(Cow::Borrowed(line)) };
     let (domains, rest) = line.split_at(at);
 
     // Scriptlets
@@ -78,7 +90,7 @@ fn translate_line(line: &str) -> Option<String> {
             let inner = body.trim().strip_prefix("//scriptlet(")?.strip_suffix(')')?;
             let args  = parse_quoted_args(inner)?;
             let args  = args.iter().map(|a| a.replace(',', "\\,")).collect::<Vec<_>>().join(", ");
-            return Some(format!("{domains}{sep}+js({args})"));
+            return Some(Cow::Owned(format!("{domains}{sep}+js({args})")));
         }
     }
 
@@ -88,11 +100,11 @@ fn translate_line(line: &str) -> Option<String> {
             let open     = body.rfind('{')?;
             let selector = body[..open].trim();
             let css      = body[open + 1..].trim().strip_suffix('}')?.trim();
-            return Some(format!("{domains}{sep}{selector}:style({css})"));
+            return Some(Cow::Owned(format!("{domains}{sep}{selector}:style({css})")));
         }
     }
 
-    Some(line.to_string())
+    Some(Cow::Borrowed(line))
 }
 
 /// Parse `'a', "b", 'c\'d'` into its unquoted values.
@@ -199,8 +211,10 @@ fn script_tag(js: &str, nonce: &str) -> String {
 }
 
 /// The `<style>` and `<script>` for one page, plus one `<script>` per userscript (so a
-/// broken one can't stop the rest), or None when nothing applies.
-fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str) -> Option<Bytes> {
+/// broken one can't stop the rest), or None when nothing applies. With an `endpoint`, the
+/// script also asks there for generic class and id rules (generic.js), unless the page is
+/// excepted from them (`$generichide`).
+fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str, endpoint: Option<&str>) -> Option<Bytes> {
     let resources = engine.url_cosmetic_resources(url);
 
     // One CSS rule per selector, so one bad selector can't void the rest. Anything that
@@ -222,6 +236,12 @@ fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str) -> O
     if !procedural.is_empty() {
         let rules = serde_json::to_string(&procedural).ok()?.replace('<', "\\u003c");
         js.push_str(&PROCEDURAL_JS.replace("__CF_RULES__", &rules));
+    }
+    if let Some(endpoint) = endpoint.filter(|_| !resources.generichide) {
+        let endpoint = serde_json::to_string(endpoint).ok()?;
+        // The `;` keeps the code before from being read as a call on ours
+        js.push_str(";\n");
+        js.push_str(&GENERIC_JS.replace("__CF_ENDPOINT__", &endpoint));
     }
 
     if css.is_empty() && js.is_empty() && userscripts.is_empty() {
@@ -245,39 +265,54 @@ fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str) -> O
 fn new_nonce() -> String {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("OS random number generator");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::config::hex(&bytes)
+}
+
+/// Whether hudsucker can decompress a body sent with these headers (every encoding browsers ask for).
+pub fn decodable(headers: &hudsucker::hyper::HeaderMap) -> bool {
+    headers.get_all(CONTENT_ENCODING).iter().all(|v| {
+        v.to_str().is_ok_and(|v| v.split(',').map(str::trim).all(|e| matches!(e, "gzip" | "x-gzip" | "deflate" | "br" | "zstd" | "identity")))
+    })
+}
+
+/// The page a response is for.
+pub struct Page<'a> {
+    pub url:        &'a str,
+    /// A page load or frame; anything else (a fetch) is only changed when it turns out to be
+    /// a whole page (see `inject_after_head`).
+    pub navigation: bool,
+    /// Same-site path the page script asks for generic rules on (see `new_generic_path`).
+    pub endpoint:   Option<&'a str>,
 }
 
 /// Add cosmetic filtering to an HTML page response. Anything that isn't a plain,
 /// decodable HTML page passes through untouched.
-pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce() -> Vec<&'a str>, url: &str, trace: &crate::filter::Trace) -> Response<Body> {
+pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce() -> Vec<&'a str>, page: &Page, trace: &crate::log::Trace) -> Response<Body> {
     let headers = res.headers();
     let is_html = headers
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         // XHTML is parsed as XML; injected CSS/JS with `&` or `<` would break the page
         .is_some_and(|t| t.len() >= 9 && t[..9].eq_ignore_ascii_case("text/html"));
-    let decodable = headers.get_all(CONTENT_ENCODING).iter().all(|v| {
-        v.to_str().is_ok_and(|v| {
-            v.split(',').map(str::trim).all(|e| matches!(e, "gzip" | "x-gzip" | "deflate" | "br" | "zstd" | "identity"))
-        })
-    });
-    let page = crate::filter::without_query(url);
-    if res.status() != StatusCode::OK || !is_html || !decodable {
-        // Data (JSON and the like) is expected to pass untouched; not worth a line each
-        if res.status() == StatusCode::OK && !is_html {
-            return res;
-        }
-        trace.write(format_args!("page {page} not filtered: status {}, html {is_html}, readable encoding {decodable}", res.status()));
+
+    // Data (JSON and the like) is expected to pass untouched; not worth a line each
+    if res.status() == StatusCode::OK && !is_html {
+        return res;
+    }
+    let decodable = decodable(headers);
+    let url       = page.url;
+    let shown     = crate::log::without_query(url);
+    if res.status() != StatusCode::OK || !decodable {
+        trace.write(format_args!("page {shown} not filtered: status {}, html {is_html}, readable encoding {decodable}", res.status()));
         return res;
     }
 
     let nonce = new_nonce();
-    let Some(tags) = page_tags(engine, &userscripts(), url, &nonce) else {
-        trace.write(format_args!("page {page} not filtered: no rules or userscripts for it"));
+    let Some(tags) = page_tags(engine, &userscripts(), url, &nonce, page.endpoint) else {
+        trace.write(format_args!("page {shown} not filtered: no rules or userscripts for it"));
         return res;
     };
-    trace.write(format_args!("page {page} filtered ({} bytes of rules and scripts added)", tags.len()));
+    trace.write(format_args!("page {shown} filtered ({} bytes of rules and scripts added)", tags.len()));
 
     // Encodings were checked above, so decoding only fails on a broken upstream body
     let Ok(res) = decode_response(res) else {
@@ -288,12 +323,13 @@ pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce
     // A policy we can't read or rewrite is kept exactly as sent; dropping it would remove the
     // site's protection. Report-only policies get the nonce too, so the site isn't sent reports
     // that name our tags.
+    let connect = page.endpoint.and_then(|path| endpoint_source(url, path));
     for name in [CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY_REPORT_ONLY] {
         let policies: Vec<HeaderValue> = parts
             .headers
             .get_all(&name)
             .iter()
-            .map(|v| v.to_str().ok().and_then(|s| HeaderValue::from_str(&allow_nonce(s, &nonce)).ok()).unwrap_or_else(|| v.clone()))
+            .map(|v| v.to_str().ok().and_then(|s| HeaderValue::from_str(&allow_nonce(s, &nonce, connect.as_deref())).ok()).unwrap_or_else(|| v.clone()))
             .collect();
         parts.headers.remove(&name);
         for policy in policies {
@@ -302,7 +338,63 @@ pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce
     }
     parts.headers.remove(CONTENT_LENGTH);
 
-    Response::from_parts(parts, inject_after_head(body, tags))
+    Response::from_parts(parts, inject_after_head(body, tags, !page.navigation))
+}
+
+/// The generic-rules address as a CSP source (`https://site.com/<path>`): that one path on
+/// the page's own site, nothing wider.
+fn endpoint_source(url: &str, path: &str) -> Option<String> {
+    let uri = url.parse::<hudsucker::hyper::Uri>().ok()?;
+    Some(format!("{}://{}{path}", uri.scheme_str()?, uri.authority()?))
+}
+
+// =========================================================================
+// GENERIC RULES
+// =========================================================================
+
+/// Most names one request may ask about, and the longest name looked at (generic.js sends
+/// at most 500 of each).
+const MAX_NAMES: usize    = 1000;
+const MAX_NAME_LEN: usize = 256;
+
+/// A fresh path for one proxy run that the page script asks for generic rules on. Starting
+/// with `/.coffee-filter-` and random, so it can't be a real page on any site.
+pub fn new_generic_path() -> String {
+    let mut bytes = [0u8; 12];
+    getrandom::fill(&mut bytes).expect("OS random number generator");
+    format!("/.coffee-filter-{}/generic", crate::config::hex(&bytes))
+}
+
+/// What the page script sends: its address and the class names and ids it has seen.
+#[derive(Deserialize)]
+struct SeenNames {
+    #[serde(default)]
+    url:     String,
+    #[serde(default)]
+    classes: Vec<String>,
+    #[serde(default)]
+    ids:     Vec<String>,
+}
+
+/// Generic hide selectors (`##.ad`, `###banner`) for the class names and ids a page reported,
+/// none on pages excepted from them (`$generichide`). `host` is the site the request went to;
+/// the page address it sent counts only when it's on that site, so a page can only ever ask
+/// about its own rules. Selectors that could break out of a style rule are dropped.
+pub fn generic_selectors(engine: &Engine, host: &str, body: &[u8]) -> Vec<String> {
+    let Ok(seen) = serde_json::from_slice::<SeenNames>(body) else { return vec![] };
+    let own_site  = seen.url.parse::<hudsucker::hyper::Uri>().ok().is_some_and(|u| u.host().is_some_and(|h| h.eq_ignore_ascii_case(host)));
+    let url       = if own_site { seen.url } else { format!("https://{host}/") };
+    let resources = engine.url_cosmetic_resources(&url);
+    if resources.generichide {
+        return vec![];
+    }
+
+    let names = |list: Vec<String>| list.into_iter().filter(|n| !n.is_empty() && n.len() <= MAX_NAME_LEN).take(MAX_NAMES);
+    engine
+        .hidden_class_id_selectors(names(seen.classes), names(seen.ids), &resources.exceptions)
+        .into_iter()
+        .filter(|s| !s.contains(['<', '{', '}']))
+        .collect()
 }
 
 // =========================================================================
@@ -314,7 +406,12 @@ pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce
 /// Only touches a directive that would block inline code. A directive that already
 /// allows inline code ('unsafe-inline' with no nonce or hash) is left alone, because
 /// adding a nonce there would switch 'unsafe-inline' off for the site's own code.
-pub fn allow_nonce(header: &str, nonce: &str) -> String {
+///
+/// With `connect` (the generic-rules address, see `endpoint_source`), a policy that limits
+/// where the page may fetch from (`connect-src`, or `default-src` without it) also allows
+/// that one address. Adding a source only ever allows more, so it's added as is; a lone
+/// 'none' is replaced, since 'none' next to other sources is read as a mistake.
+pub fn allow_nonce(header: &str, nonce: &str, connect: Option<&str>) -> String {
     header
         .split(',')
         .map(|policy| {
@@ -341,6 +438,17 @@ pub fn allow_nonce(header: &str, nonce: &str) -> String {
                 {
                     let sources = format!("{} {source}", directives[i].1).trim().to_string();
                     directives.push((base.to_string(), sources));
+                }
+            }
+
+            // The page script's one request for generic rules
+            if let Some(source) = connect {
+                let with_ours = |sources: &str| if sources.eq_ignore_ascii_case("'none'") { source.to_string() } else { format!("{sources} {source}").trim().to_string() };
+                if let Some(i) = directives.iter().position(|(n, _)| n == "connect-src") {
+                    directives[i].1 = with_ours(&directives[i].1);
+                } else if let Some(i) = directives.iter().position(|(n, _)| n == "default-src") {
+                    let sources = with_ours(&directives[i].1);
+                    directives.push(("connect-src".to_string(), sources));
                 }
             }
 
@@ -390,40 +498,74 @@ fn head_end(html: &[u8], from: usize) -> Option<usize> {
     None
 }
 
+/// Whether a body that starts with `start` is a whole HTML document (doctype, `<html>`,
+/// `<head>`, or a leading comment), or None while too little has arrived to tell. Leading
+/// whitespace and a byte order mark are skipped.
+fn looks_like_document(start: &[u8]) -> Option<bool> {
+    const STARTS: [&[u8]; 4] = [b"<!doctype", b"<html", b"<head", b"<!--"];
+    let start = start.strip_prefix(b"\xef\xbb\xbf").unwrap_or(start).trim_ascii_start();
+    let mut maybe = false;
+    for prefix in STARTS {
+        let n = start.len().min(prefix.len());
+        if start[..n].eq_ignore_ascii_case(&prefix[..n]) {
+            if n == prefix.len() {
+                return Some(true);
+            }
+            maybe = true;
+        }
+    }
+    if maybe { None } else { Some(false) }
+}
+
 /// Insert `tags` right after `<head>` while streaming. Holds back only the bytes before
 /// `<head>` (usually a few hundred); gives up and passes through after 256 KB.
-fn inject_after_head(body: Body, tags: Bytes) -> Body {
+///
+/// With `documents_only` (responses to fetches, not page loads) the body must start like a
+/// whole page; HTML fragments (GitHub's include-fragments, HTMX, Turbo) pass through as
+/// soon as their first bytes show it, instead of being held back looking for a `<head>`.
+fn inject_after_head(body: Body, tags: Bytes, documents_only: bool) -> Body {
     const LIMIT: usize = 256 * 1024;
 
     // How far back to rescan when a chunk arrives: a `<head ...>` tag split across chunks
     const OVERLAP: usize = 4096;
 
-    let stream = stream::unfold((BodyDataStream::new(body), Some(Vec::new())), move |(mut body, mut held)| {
+    let stream = stream::unfold((BodyDataStream::new(body), Some(Vec::new()), documents_only), move |(mut body, mut held, mut check)| {
         let tags = tags.clone();
         async move {
             loop {
                 let Some(mut buf) = held.take() else {
-                    return body.next().await.map(|chunk| (chunk, (body, None)));
+                    return body.next().await.map(|chunk| (chunk, (body, None, false)));
                 };
                 match body.next().await {
                     Some(Ok(chunk)) => {
                         let from = buf.len().saturating_sub(OVERLAP);
                         buf.extend_from_slice(&chunk);
+
+                        // A fragment, not a page: hand it over untouched
+                        if check {
+                            match looks_like_document(&buf) {
+                                Some(true) => check = false,
+                                Some(false) => return Some((Ok(Bytes::from(buf)), (body, None, false))),
+                                // Too little to tell yet; nothing complete to find either
+                                None => {}
+                            }
+                        }
+
                         if let Some(at) = head_end(&buf, from) {
                             let mut out = Vec::with_capacity(buf.len() + tags.len());
                             out.extend_from_slice(&buf[..at]);
                             out.extend_from_slice(&tags);
                             out.extend_from_slice(&buf[at..]);
-                            return Some((Ok(Bytes::from(out)), (body, None)));
+                            return Some((Ok(Bytes::from(out)), (body, None, false)));
                         }
                         if buf.len() > LIMIT {
-                            return Some((Ok(Bytes::from(buf)), (body, None)));
+                            return Some((Ok(Bytes::from(buf)), (body, None, false)));
                         }
                         held = Some(buf);
                     }
-                    Some(Err(e)) => return Some((Err(e), (body, None))),
+                    Some(Err(e)) => return Some((Err(e), (body, None, false))),
                     None if buf.is_empty() => return None,
-                    None => return Some((Ok(Bytes::from(buf)), (body, None))),
+                    None => return Some((Ok(Bytes::from(buf)), (body, None, false))),
                 }
             }
         }
@@ -455,6 +597,22 @@ mod tests {
     }
 
     #[test]
+    fn plain_lists_are_not_copied() {
+        // Rules that need no change are borrowed, not copied line by line
+        assert!(matches!(translate_line("||ads.com^"), Some(Cow::Borrowed(_))));
+        assert!(matches!(translate_line("a.com##.ad"), Some(Cow::Borrowed(_))));
+
+        // A list without any AdGuard-only rule comes back as the same string
+        let list = String::from("! Title: plain\n||ads.com^\na.com##.ad\n");
+        let at   = list.as_ptr();
+        let out  = translate_adguard(list);
+        assert_eq!(out.as_ptr(), at, "no copy of the whole list");
+
+        // One that has some is translated
+        assert_eq!(translate_adguard("a.com#$#.ad { color: red }\n||x.com^".into()), "a.com##.ad:style(color: red)\n||x.com^\n");
+    }
+
+    #[test]
     fn library_must_match_pinned_hash() {
         assert!(verify_library(b"{\"version\":\"x\",\"scriptlets\":[]}").is_err());
     }
@@ -471,7 +629,7 @@ mod tests {
             .body(Body::from("<html><head></head></html>"))
             .unwrap();
 
-        let out      = inject(res, &engine, Vec::new, "https://a.com/", &Default::default());
+        let out      = inject(res, &engine, Vec::new, &page("https://a.com/"), &Default::default());
         let policies = out.headers().get_all(CONTENT_SECURITY_POLICY).iter().cloned().collect::<Vec<_>>();
         assert!(policies.contains(&raw), "unreadable policy passed through untouched");
         assert!(policies.iter().any(|p| p.to_str().is_ok_and(|s| s.contains("'nonce-"))), "readable policy got our nonce");
@@ -481,30 +639,121 @@ mod tests {
 
     #[tokio::test]
     async fn xhtml_is_left_alone() {
-        let engine = engine_with("a.com##.ad", false);
-        let page   = "<html><head></head></html>";
-        let res    = Response::builder().header(CONTENT_TYPE, "application/xhtml+xml").body(Body::from(page)).unwrap();
-        let html   = inject(res, &engine, Vec::new, "https://a.com/", &Default::default()).into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(html, Bytes::from(page));
+        let engine    = engine_with("a.com##.ad", false);
+        let page_text = "<html><head></head></html>";
+        let res       = Response::builder().header(CONTENT_TYPE, "application/xhtml+xml").body(Body::from(page_text)).unwrap();
+        let html      = inject(res, &engine, Vec::new, &page("https://a.com/"), &Default::default()).into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(html, Bytes::from(page_text));
+    }
+
+    /// A page load of `url`, with no generic rules.
+    fn page(url: &str) -> Page<'_> {
+        Page { url, navigation: true, endpoint: None }
     }
 
     #[test]
     fn csp_gets_nonce_only_where_inline_is_blocked() {
         // Reddit-style: scripts pinned by nonce, styles allow inline
-        let p = allow_nonce("default-src 'none'; script-src 'nonce-abc'; style-src 'unsafe-inline'", "N");
+        let p = allow_nonce("default-src 'none'; script-src 'nonce-abc'; style-src 'unsafe-inline'", "N", None);
         assert!(p.contains("script-src 'nonce-abc' 'nonce-N'"));
         assert!(p.contains("style-src 'unsafe-inline'") && !p.contains("style-src 'unsafe-inline' 'nonce-N'"));
 
         // default-src only: new directives copy its sources
-        let p = allow_nonce("default-src 'self'", "N");
+        let p = allow_nonce("default-src 'self'", "N", None);
         assert!(p.contains("style-src 'self' 'nonce-N'") && p.contains("script-src 'self' 'nonce-N'"));
 
         // style-src-elem wins over style-src
-        let p = allow_nonce("style-src 'self'; style-src-elem 'self'", "N");
+        let p = allow_nonce("style-src 'self'; style-src-elem 'self'", "N", None);
         assert!(p.contains("style-src-elem 'self' 'nonce-N'") && p.contains("style-src 'self';"));
 
         // No restrictions: unchanged
-        assert_eq!(allow_nonce("frame-ancestors 'none'", "N"), "frame-ancestors 'none'");
+        assert_eq!(allow_nonce("frame-ancestors 'none'", "N", None), "frame-ancestors 'none'");
+    }
+
+    #[test]
+    fn csp_lets_the_page_script_ask_for_generic_rules() {
+        let ours = Some("https://a.com/.coffee-filter-x/generic");
+
+        // connect-src gets exactly our address, nothing wider
+        let p = allow_nonce("connect-src https://api.a.com", "N", ours);
+        assert!(p.contains("connect-src https://api.a.com https://a.com/.coffee-filter-x/generic"), "{p}");
+
+        // 'none' alone is replaced, since 'none' next to another source is ignored
+        let p = allow_nonce("connect-src 'none'", "N", ours);
+        assert_eq!(p, "connect-src https://a.com/.coffee-filter-x/generic");
+
+        // default-src only: a connect-src with its sources plus ours
+        let p = allow_nonce("default-src 'self'", "N", ours);
+        assert!(p.contains("connect-src 'self' https://a.com/.coffee-filter-x/generic"), "{p}");
+
+        // No fetch limits: none added
+        assert!(!allow_nonce("script-src 'self'", "N", ours).contains("connect-src"));
+
+        assert_eq!(endpoint_source("https://www.a.com:8443/p?q", "/.cf/generic").as_deref(), Some("https://www.a.com:8443/.cf/generic"));
+    }
+
+    #[test]
+    fn generic_rules_match_the_page_names() {
+        let engine = engine_with("##.ad-banner\n###sponsor\n##.unused\nexcepted.com#@#.ad-banner\n@@||nohide.com^$generichide", false);
+        let ask    = |host: &str, body: &str| {
+            let mut found = generic_selectors(&engine, host, body.as_bytes());
+            found.sort();
+            found
+        };
+        let names = r#"{"url":"https://news.com/a","classes":["ad-banner","story"],"ids":["sponsor"]}"#;
+
+        assert_eq!(ask("news.com", names), ["#sponsor", ".ad-banner"]);
+        assert_eq!(ask("excepted.com", &names.replace("news.com", "excepted.com")), ["#sponsor"], "the site's exception holds");
+        assert!(ask("nohide.com", &names.replace("news.com", "nohide.com")).is_empty(), "$generichide: none at all");
+        assert!(ask("news.com", "not json").is_empty());
+
+        // A page can't borrow another site's exceptions: the address must be on the site asked
+        assert_eq!(ask("news.com", &names.replace("news.com/a", "excepted.com/a")), ["#sponsor", ".ad-banner"]);
+    }
+
+    #[test]
+    fn generic_requests_are_capped() {
+        let long    = "x".repeat(MAX_NAME_LEN + 1);
+        let engine  = engine_with(&format!("##.a0\n##.a{}\n##.{long}", MAX_NAMES + 5), false);
+        let classes = std::iter::once(long).chain((0..MAX_NAMES + 10).map(|i| format!("a{i}"))).collect::<Vec<_>>();
+        let body    = serde_json::json!({ "url": "https://s.com/", "classes": classes }).to_string();
+        // The over-long name is skipped, and names past the cap aren't looked at
+        assert_eq!(generic_selectors(&engine, "s.com", body.as_bytes()), [".a0"]);
+    }
+
+    #[test]
+    fn page_script_asks_for_generic_rules_unless_excepted() {
+        let engine = engine_with("##.ad-banner\n@@||nohide.com^$generichide", false);
+        let tags   = page_tags(&engine, &[], "https://news.com/", "N", Some("/.coffee-filter-x/generic")).unwrap();
+        let tags   = String::from_utf8_lossy(&tags);
+        assert!(tags.contains("const endpoint = \"/.coffee-filter-x/generic\";"), "{tags}");
+        assert!(!tags.contains("__CF_ENDPOINT__"));
+        assert!(page_tags(&engine, &[], "https://nohide.com/", "N", Some("/.coffee-filter-x/generic")).is_none(), "$generichide: no script");
+    }
+
+    #[test]
+    fn fragments_and_documents_are_told_apart() {
+        assert_eq!(looks_like_document(b"<!DOCTYPE html><html>"), Some(true));
+        assert_eq!(looks_like_document(b"\xef\xbb\xbf\n  <html lang=en>"), Some(true));
+        assert_eq!(looks_like_document(b"<!-- built -->"), Some(true));
+        assert_eq!(looks_like_document(b"<div class=\"x\">"), Some(false));
+        assert_eq!(looks_like_document(b"  hello"), Some(false));
+        assert_eq!(looks_like_document(b"<!DOC"), None, "too little to tell");
+        assert_eq!(looks_like_document(b"   "), None);
+    }
+
+    #[tokio::test]
+    async fn fetched_fragments_pass_through_without_waiting() {
+        // A fragment whose rest never arrives: it must come through right away anyway
+        let chunks = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from("<div class=\"comment\">hi</div>"))]).chain(stream::pending());
+        let mut body = BodyDataStream::new(inject_after_head(Body::from_stream(chunks), Bytes::from("<style>X</style>"), true));
+        let first    = tokio::time::timeout(std::time::Duration::from_secs(2), body.next()).await.expect("not held back").unwrap().unwrap();
+        assert_eq!(first, Bytes::from("<div class=\"comment\">hi</div>"));
+
+        // A whole page fetched (a service worker saving it) still gets the tags
+        let chunks = vec![Ok::<_, std::io::Error>(Bytes::from("<!doctype html><html><head><title>t</title>"))];
+        let html   = inject_after_head(Body::from_stream(stream::iter(chunks)), Bytes::from("<style>X</style>"), true).collect().await.unwrap().to_bytes();
+        assert_eq!(html, Bytes::from("<!doctype html><html><head><style>X</style><title>t</title>"));
     }
 
     #[test]
@@ -522,7 +771,7 @@ mod tests {
     #[tokio::test]
     async fn injects_after_head_across_chunks() {
         let chunks = vec![Ok::<_, std::io::Error>(Bytes::from("<!DOCTYPE html><html><he")), Ok(Bytes::from("ad><title>t</title>"))];
-        let body   = inject_after_head(Body::from_stream(stream::iter(chunks)), Bytes::from("<style>X</style>"));
+        let body   = inject_after_head(Body::from_stream(stream::iter(chunks)), Bytes::from("<style>X</style>"), false);
         let html   = body.collect().await.unwrap().to_bytes();
         assert_eq!(html, Bytes::from("<!DOCTYPE html><html><head><style>X</style><title>t</title>"));
     }
@@ -530,7 +779,7 @@ mod tests {
     fn engine_with(rules: &str, trusted: bool) -> Engine {
         let mut set = FilterSet::new(false);
         let opts    = ParseOptions { permissions: if trusted { TRUSTED } else { PermissionMask::default() }, ..Default::default() };
-        set.add_filter_list(translate_adguard(rules), opts);
+        set.add_filter_list(translate_adguard(rules.to_string()), opts);
         let mut engine = Engine::new_with_filter_set(set);
         let library = r#"{"version":"1","scriptlets":[
             {"names":["set-constant","set.js","ubo-set.js"],"scriptlet":"function setConstant(source,args){window.__cf=[source.name].concat(args)}"},
@@ -542,17 +791,17 @@ mod tests {
     #[test]
     fn reddit_promoted_posts_are_hidden() {
         let engine = engine_with("reddit.com##shreddit-ad-post\nreddit.com##[data-faceplate-tracking-context*=\"\\\"promoted\\\":true\"]", false);
-        let tags   = String::from_utf8(page_tags(&engine, &[], "https://www.reddit.com/", "N").unwrap().to_vec()).unwrap();
+        let tags   = String::from_utf8(page_tags(&engine, &[], "https://www.reddit.com/", "N", None).unwrap().to_vec()).unwrap();
         assert!(tags.starts_with("<style nonce=\"N\">"));
         assert!(tags.contains("shreddit-ad-post{display:none!important}"));
-        assert!(page_tags(&engine, &[], "https://example.com/", "N").is_none(), "rules are site-specific");
+        assert!(page_tags(&engine, &[], "https://example.com/", "N", None).is_none(), "rules are site-specific");
     }
 
     #[test]
     fn scriptlets_run_with_both_syntaxes() {
         let engine = engine_with("a.com##+js(set, ads, false)\nb.com#%#//scriptlet('set-constant', 'x', '1')", false);
-        let a = String::from_utf8(page_tags(&engine, &[], "https://a.com/", "N").unwrap().to_vec()).unwrap();
-        let b = String::from_utf8(page_tags(&engine, &[], "https://b.com/", "N").unwrap().to_vec()).unwrap();
+        let a = String::from_utf8(page_tags(&engine, &[], "https://a.com/", "N", None).unwrap().to_vec()).unwrap();
+        let b = String::from_utf8(page_tags(&engine, &[], "https://b.com/", "N", None).unwrap().to_vec()).unwrap();
         assert!(a.contains("cf_set_constant(\"ads\", \"false\")"), "{a}");
         assert!(b.contains("cf_set_constant(\"x\", \"1\")"), "{b}");
         assert!(a.contains("<script nonce=\"N\">"));
@@ -561,14 +810,14 @@ mod tests {
     #[test]
     fn trusted_scriptlets_need_a_trusted_list() {
         let rule = "a.com#%#//scriptlet('trusted-click-element', 'button')";
-        assert!(page_tags(&engine_with(rule, false), &[], "https://a.com/", "N").is_none());
-        assert!(page_tags(&engine_with(rule, true), &[], "https://a.com/", "N").is_some_and(|t| String::from_utf8_lossy(&t).contains("cf_trusted_click_element")));
+        assert!(page_tags(&engine_with(rule, false), &[], "https://a.com/", "N", None).is_none());
+        assert!(page_tags(&engine_with(rule, true), &[], "https://a.com/", "N", None).is_some_and(|t| String::from_utf8_lossy(&t).contains("cf_trusted_click_element")));
     }
 
     #[test]
     fn procedural_rules_go_to_the_script() {
         let engine = engine_with("a.com##div:has-text(Sponsored):upward(2)\na.com##.x:remove()", false);
-        let tags   = String::from_utf8(page_tags(&engine, &[], "https://a.com/", "N").unwrap().to_vec()).unwrap();
+        let tags   = String::from_utf8(page_tags(&engine, &[], "https://a.com/", "N", None).unwrap().to_vec()).unwrap();
         assert!(tags.contains("\"has-text\"") && tags.contains("\"upward\"") && tags.contains("\"remove\""), "{tags}");
         assert!(!tags.contains("__CF_RULES__"));
     }
@@ -576,14 +825,14 @@ mod tests {
     #[test]
     fn selectors_cannot_break_out_of_style() {
         let engine = engine_with("a.com##div[x=\"</style><script>alert(1)</script>\"]", false);
-        assert!(page_tags(&engine, &[], "https://a.com/", "N").is_none_or(|t| !String::from_utf8_lossy(&t).contains("alert(1)")));
+        assert!(page_tags(&engine, &[], "https://a.com/", "N", None).is_none_or(|t| !String::from_utf8_lossy(&t).contains("alert(1)")));
     }
 
     #[test]
     fn each_userscript_gets_its_own_nonced_tag() {
         let engine = engine_with("", false);
         // Userscripts arrive already escaped (userscripts::build); only the tag is added here
-        let tags   = String::from_utf8(page_tags(&engine, &["one()", "two()"], "https://a.com/", "N").unwrap().to_vec()).unwrap();
+        let tags   = String::from_utf8(page_tags(&engine, &["one()", "two()"], "https://a.com/", "N", None).unwrap().to_vec()).unwrap();
         assert_eq!(tags, "<script nonce=\"N\">one()</script><script nonce=\"N\">two()</script>");
     }
 
@@ -591,7 +840,7 @@ mod tests {
     fn scriptlet_arguments_cannot_close_the_script_tag() {
         let engine = engine_with("a.com##+js(set-constant, x, </sCRipt><script src=//evil/x.js></script>)\nb.com##+js(set-constant, y, <!--)", false);
         for url in ["https://a.com/", "https://b.com/"] {
-            let tags  = String::from_utf8_lossy(&page_tags(&engine, &[], url, "N").unwrap()).to_ascii_lowercase();
+            let tags  = String::from_utf8_lossy(&page_tags(&engine, &[], url, "N", None).unwrap()).to_ascii_lowercase();
             assert!(tags.contains("cf_set_constant"), "{tags}");
             let inner = tags.trim_start_matches("<script nonce=\"n\">").trim_end_matches("</script>");
             assert!(!inner.contains("</script") && !inner.contains("<!--"), "{url}: {tags}");

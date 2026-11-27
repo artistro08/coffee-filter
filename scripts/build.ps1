@@ -16,10 +16,8 @@ $env:PATH += ";${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
 # CMake, NASM, and libclang for BoringSSL
 . "$PSScriptRoot\tools.ps1"
 
-# Both version numbers go up together (Windows refuses changed content under the same one)
+# The version lives only in the manifest (the csproj reads it from there)
 $version = ([xml](Get-Content "$root\app\Package.appxmanifest")).Package.Identity.Version
-$app     = @(([xml](Get-Content "$root\app\CoffeeFilter.csproj")).Project.PropertyGroup.Version | Where-Object { $_ })[0]
-if ($app -ne $version) { throw "app\CoffeeFilter.csproj says $app but the manifest says $version; bump both" }
 
 # Core
 Push-Location "$root\core"

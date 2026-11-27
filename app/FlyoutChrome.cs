@@ -147,17 +147,17 @@ public static unsafe partial class PopupWindow
     public static ((int Left, int Top, int Right, int Bottom) Panel, TaskbarEdge Edge, double Scale) Place(bool atCursor)
     {
         nint monitor;
-        if (atCursor && GetCursorPos(out var point))
+        if (atCursor && Native.GetCursorPos(out var point))
         {
-            monitor = MonitorFromPoint(point, MonitorDefaultToNearest);
+            monitor = Native.MonitorFromPoint(point, Native.MonitorDefaultToNearest);
         }
         else
         {
-            monitor = MonitorFromWindow(FindWindowW("Shell_TrayWnd", null), MonitorDefaultToPrimary);
+            monitor = Native.MonitorFromWindow(FindWindowW("Shell_TrayWnd", null), Native.MonitorDefaultToPrimary);
         }
         var info = new MONITORINFO { cbSize = (uint)sizeof(MONITORINFO) };
         GetMonitorInfoW(monitor, ref info);
-        var scale = GetDpiForMonitor(monitor, 0, out var dpi, out _) == 0 ? dpi / 96.0 : 1.0;
+        var scale = Native.MonitorScale(monitor);
 
         var (screen, work) = (info.rcMonitor, info.rcWork);
         var edge = work.Bottom < screen.Bottom ? TaskbarEdge.Bottom
@@ -182,13 +182,32 @@ public static unsafe partial class PopupWindow
     /// <summary>
     /// Give the taskbar focus back, so keys don't go to a closing flyout.
     /// </summary>
-    public static void FocusTaskbar() => SetForegroundWindow(FindWindowW("Shell_TrayWnd", null));
+    public static void FocusTaskbar() => Native.SetForegroundWindow(FindWindowW("Shell_TrayWnd", null));
 
     /// <summary>
     /// The top-level window in front. Windows can report an inner input window of a WinUI
     /// window as the foreground one, so this returns the top-level window that owns it.
     /// </summary>
-    public static nint Foreground => GetAncestor(GetForegroundWindow(), GaRootOwner);
+    public static nint Foreground => GetAncestor(Native.GetForegroundWindow(), GaRootOwner);
+
+    /// <summary>
+    /// Run <paramref name="show"/> now, or, when opened from the hidden-icons panel, once that
+    /// panel has had 150 ms to close; otherwise it takes focus back the moment a popup opens.
+    /// Used by the flyout and the tray menu.
+    /// </summary>
+    public static void AfterOverflowCloses(Microsoft.UI.Dispatching.DispatcherQueue queue, Action show)
+    {
+        if (!Native.IsShellOverflow(Native.GetForegroundWindow()))
+        {
+            show();
+            return;
+        }
+        var timer = queue.CreateTimer();
+        timer.Interval    = TimeSpan.FromMilliseconds(150);
+        timer.IsRepeating = false;
+        timer.Tick       += (_, _) => show();
+        timer.Start();
+    }
 
     /// <summary>
     /// Subclass id 1 erases to black (see-through for TransparentBackdrop); id 2 strips the
@@ -239,31 +258,13 @@ public static unsafe partial class PopupWindow
     internal const uint DwmBbEnable                = 0x1;
     internal const uint DwmBbBlurRegion            = 0x2;
     private const uint GaRootOwner                 = 3;
-    private const uint MonitorDefaultToPrimary     = 1;
-    private const uint MonitorDefaultToNearest     = 2;
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MONITORINFO
     {
         public uint cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
+        public Native.RECT rcMonitor;
+        public Native.RECT rcWork;
         public uint dwFlags;
     }
 
@@ -294,30 +295,10 @@ public static unsafe partial class PopupWindow
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out POINT point);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromPoint(POINT point, uint flags);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromWindow(nint hwnd, uint flags);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetMonitorInfoW(nint monitor, ref MONITORINFO info);
-
-    [LibraryImport("shcore.dll")]
-    private static partial int GetDpiForMonitor(nint monitor, int type, out uint dpiX, out uint dpiY);
 
     [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint FindWindowW(string className, string? windowName);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetForegroundWindow(nint hwnd);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint GetForegroundWindow();
 
     [LibraryImport("user32.dll")]
     private static partial nint GetAncestor(nint hwnd, uint flags);
@@ -334,10 +315,10 @@ public static unsafe partial class PopupWindow
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetClientRect(nint hwnd, out RECT rect);
+    private static partial bool GetClientRect(nint hwnd, out Native.RECT rect);
 
     [LibraryImport("user32.dll")]
-    private static partial int FillRect(nint dc, in RECT rect, nint brush);
+    private static partial int FillRect(nint dc, in Native.RECT rect, nint brush);
 
     [LibraryImport("gdi32.dll")]
     internal static partial nint CreateRectRgn(int left, int top, int right, int bottom);

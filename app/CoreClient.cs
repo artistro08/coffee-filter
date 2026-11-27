@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
 
 namespace CoffeeFilter;
 
@@ -100,6 +101,19 @@ public class CoreStatus
     /// Whether the core writes the detailed log (debug.log).
     /// </summary>
     public bool DetailedLog { get; set; }
+
+    /// <summary>
+    /// A brief status (<c>status</c> with <c>brief: true</c>) leaves out the filter lists,
+    /// exclusions, excluded apps, and userscripts; left out isn't empty, so this carries over the
+    /// ones from the last full reply. Counters, on/off state, and problems are always sent.
+    /// </summary>
+    public void KeepListsFrom(CoreStatus known)
+    {
+        Lists        = known.Lists;
+        Exclusions   = known.Exclusions;
+        ExcludedApps = known.ExcludedApps;
+        Userscripts  = known.Userscripts;
+    }
 }
 
 public class CoreReply
@@ -136,7 +150,7 @@ public sealed class CoreClient : IDisposable
 {
     private readonly Process _process;
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private readonly System.Threading.Channels.Channel<CoreReply> _replies = System.Threading.Channels.Channel.CreateUnbounded<CoreReply>();
+    private readonly Channel<CoreReply> _replies = Channel.CreateUnbounded<CoreReply>();
 
     /// <summary>
     /// The core process ended (on a thread pool thread).
@@ -236,7 +250,8 @@ public sealed class CoreClient : IDisposable
     /// </summary>
     public async Task<CoreReply> SendAsync(string cmd, JsonObject? args = null)
     {
-        var payload = args?.DeepClone().AsObject() ?? [];
+        // Callers build a new object for each command, so it's sent as is
+        var payload = args ?? [];
         payload["cmd"] = cmd;
 
         await _lock.WaitAsync();
@@ -259,7 +274,7 @@ public sealed class CoreClient : IDisposable
         {
             return await _replies.Reader.ReadAsync(timeout.Token);
         }
-        catch (System.Threading.Channels.ChannelClosedException)
+        catch (ChannelClosedException)
         {
             throw new InvalidOperationException("The filter core stopped unexpectedly.");
         }
@@ -267,14 +282,7 @@ public sealed class CoreClient : IDisposable
         {
             // Stuck, not stopped: end it, so the app's restart takes over instead of every
             // command waiting behind this one forever
-            try
-            {
-                _process.Kill();
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-                // Already gone
-            }
+            Kill();
             throw new InvalidOperationException("The filter core stopped responding, so it's being restarted.");
         }
     }
@@ -283,6 +291,41 @@ public sealed class CoreClient : IDisposable
     /// Closing stdin tells the core to stop cleanly and restore proxy settings.
     /// </summary>
     public void Dispose() => Dispose(5000);
+
+    /// <summary>
+    /// Stop the core like <see cref="Dispose()"/>, but wait for it without blocking the calling
+    /// thread, so the window stays responsive while the core exits.
+    /// </summary>
+    public async Task DisposeAsync(int waitMs = 5000)
+    {
+        try
+        {
+            _process.StandardInput.Close();
+            using var wait = new CancellationTokenSource(waitMs);
+            await _process.WaitForExitAsync(wait.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Kill();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        {
+            // Already exited (its pipe may be closed too)
+        }
+        _process.Dispose();
+    }
+
+    private void Kill()
+    {
+        try
+        {
+            _process.Kill();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Already gone
+        }
+    }
 
     /// <summary>
     /// Stop the core, waiting at most <paramref name="waitMs"/> before ending it. The core puts

@@ -21,12 +21,17 @@ Clicking a `t.co` link doesn't send your browser to t.co. Coffee Filter asks t.c
 Some ads (like Reddit's promoted posts) are part of the page itself, so there's no request to block. For those, Coffee Filter adds one `<style>` and one `<script>` right after `<head>` in each HTML page, the way Zen and AdGuard do:
 
 - **Hide rules** (`##`) become CSS.
+- **Generic class/id rules** (like `##.ad-banner` on every site) are too many to send with each page, so the script asks Coffee Filter for just the ones matching the class names and ids the page uses.
 - **Style and advanced rules** (`#$#`, `:style()`, `:has-text()`, `:upward()`, `:xpath()`, `:remove()`, ...) run in a small script.
 - **Scriptlets** (`##+js(...)` and AdGuard's `#%#//scriptlet(...)`) come from [AdGuard's scriptlet library](https://github.com/AdguardTeam/Scriptlets), pinned to v2.5.1 and its SHA-256, so a changed or tampered download is refused.
 - **`trusted-*` scriptlets** only run for lists with `"trusted": true` in `config.json`. The AdGuard lists Coffee Filter starts with are trusted, like in Zen. Lists you add in the app aren't trusted; set the flag by hand only for lists you trust (if you copy Zen's lists over, keep Zen's trusted flags, which mark the AdGuard lists).
 - If a site's Content-Security-Policy would block inline code, a fresh nonce is added for these two tags only.
 
 > AdGuard rules that run raw JavaScript (`#%#` without `//scriptlet`) are skipped on purpose. They're arbitrary code from a list.
+
+### JSON Pruning
+
+Some sites send their ads inside the data the page loads, like X's promoted posts in its timeline. AdGuard's `$jsonprune` rules take those entries out of the site's JSON before the page ever sees it, and Coffee Filter applies them the way AdGuard for Windows does. A rule it can't apply exactly as written is skipped (the detailed log says which), so nothing is ever removed more broadly than the list asked for.
 
 ### Userscripts
 
@@ -97,6 +102,8 @@ Import-Certificate -FilePath .\CoffeeFilter-signing.cer -CertStoreLocation Cert:
 3. Open Coffee Filter and say **Yes** when it asks for admin to install its own certificate.
 
 > The package is signed with a certificate made for this project rather than one from a certificate authority, which is why Windows needs step 1. The `.cer` holds no private key, and it's not the certificate Coffee Filter uses to read HTTPS traffic; that one is made on your PC at first launch.
+
+> Windows Defender may flag Coffee Filter as `Trojan:Win32/Bearfoos.A!ml`. That's a false positive: the `!ml` means it's a machine-learning guess, and new apps signed with their own certificate (like this one) set it off. You can check the files yourself, since the source is all here. To keep using it, open **Windows Security** > **Virus & threat protection** > **Protection history**, pick the Coffee Filter entry, and choose **Allow on device**. You can also [report it to Microsoft as a false positive](https://www.microsoft.com/wdsi/filesubmission) so it stops being flagged.
 
 ## Resource Use
 
@@ -185,7 +192,6 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - **WebSockets go direct** from browsers (the PAC sends `ws:`/`wss:` straight out), so filter rules don't apply to them. The few that do come through (from apps) don't carry Chrome's fingerprint.
 - **One HTTP/2 detail differs from Chrome.** The TLS fingerprint and HTTP/2 settings match Chrome's, but the order of a request's first few headers is fixed by the HTTP/2 library (Zen's is Go's own, too).
 - **Work intranets** whose public names point at private addresses are refused through the proxy. Add them to the exclusions.
-- **Generic class/id hide rules** (like `##.ad-banner` on every site) aren't applied yet. Site-specific rules and generic complex selectors are.
 - **Numbers and times** use invariant formatting (the app is built with invariant globalization to save memory).
 
 ## Layout

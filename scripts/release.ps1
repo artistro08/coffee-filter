@@ -21,10 +21,8 @@ $csproj     = [xml](Get-Content "$root\app\CoffeeFilter.csproj")
 $full       = ([xml](Get-Content "$root\app\Package.appxmanifest")).Package.Identity.Version
 $version    = ($full -split '\.')[0..2] -join '.'
 $thumbprint = @($csproj.Project.PropertyGroup.PackageCertificateThumbprint | Where-Object { $_ })[0]
-$app        = @($csproj.Project.PropertyGroup.Version | Where-Object { $_ })[0]
 $core       = (Select-String -Path "$root\core\Cargo.toml" -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
 if (-not $full.EndsWith('.0')) { throw "a release's fourth number is 0 (manifest says $full)" }
-if ($app -ne $full) { throw "app\CoffeeFilter.csproj says $app, the manifest says $full" }
 if ($core -ne $version) { throw "core\Cargo.toml says $core, the release is $version" }
 
 # What's released must be what's on GitHub, under a tag that's still free

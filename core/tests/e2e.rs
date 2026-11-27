@@ -26,13 +26,17 @@ const TEST_LIST_URL: &str = "https://invalid.invalid/never-downloaded";
 
 /// One network rule, plus one of each cosmetic kind on example.com, and one on dropbox.com
 /// (strict CSP: inline scripts only run with our nonce). The github.com rule must never apply: it's on
-/// Zen's list of sites that are never decrypted.
+/// Zen's list of sites that are never decrypted. The two generic class rules apply on any site
+/// whose page uses the class (Wikipedia's logo, and one of Dropbox's layout classes, under its CSP).
 const TEST_LIST: &str = "||doubleclick.net^
 ||github.com/robots.txt^
 example.com##h1
 example.com##p:has-text(documentation):remove()
 example.com#%#//scriptlet('remove-attr', 'lang', 'html')
 dropbox.com##footer:remove()
+##.central-textlogo
+##.dwg-stack__item
+||jsonplaceholder.typicode.com/todos/$jsonprune=\\$.title
 ";
 
 // =========================================================================
@@ -114,6 +118,35 @@ fn curl(url: &str, headers: &[&str]) -> String {
     String::from_utf8(cmd.arg(url).output().unwrap().stdout).unwrap()
 }
 
+/// GET through the proxy (asking for compression, like a browser) and return the body.
+fn curl_get(url: &str) -> String {
+    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\curl.exe");
+    let out  = Command::new(curl)
+        .args(["-s", "--ssl-no-revoke", "--compressed", "--max-time", "20", "-x", &format!("127.0.0.1:{PORT}"), url])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// A JSON reply with `title` taken out by the test list's `$jsonprune` rule.
+fn assert_json_pruned() {
+    let todo: Value = serde_json::from_str(&curl_get("https://jsonplaceholder.typicode.com/todos/1")).expect("JSON came back");
+    assert!(todo.get("title").is_none(), "$jsonprune removed it: {todo}");
+    assert_eq!(todo["id"], 1, "the rest is untouched");
+    let other: Value = serde_json::from_str(&curl_get("https://jsonplaceholder.typicode.com/posts/1")).expect("JSON came back");
+    assert!(other.get("title").is_some(), "addresses the rule isn't for keep everything");
+}
+
+/// POST `body` through the proxy and return what comes back.
+fn curl_post(url: &str, body: &str) -> String {
+    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\curl.exe");
+    let out  = Command::new(curl)
+        .args(["-s", "--ssl-no-revoke", "--max-time", "20", "-x", &format!("127.0.0.1:{PORT}"), "--data-raw", body, url])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
 /// The proxy's answer to the tunnel request (CONNECT) itself, as curl reports it.
 fn connect_code(url: &str) -> String {
     let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\curl.exe");
@@ -191,7 +224,7 @@ fn proxy_end_to_end() {
     let result = std::panic::catch_unwind(|| {
         // Start: the user's PAC is replaced by ours
         let (mut core, ready) = Core::spawn(&profile);
-        assert_eq!(ready["status"]["rules"], 6);
+        assert_eq!(ready["status"]["rules"], 9);
         assert_eq!(ready["status"]["cert_installed"], true);
         assert_eq!(core.send(json!({ "cmd": "start" }))["ok"], true);
         // Windows is pointed at our PAC script, which the proxy serves
@@ -222,6 +255,7 @@ fn proxy_end_to_end() {
         assert_eq!(curl("https://example.com/", &[]), "200", "clean site loads");
         assert_eq!(curl(ad, &["Sec-Fetch-Dest: script", "Referer: https://news.example/"]), "403", "ad blocked");
         assert_eq!(curl("https://doubleclick.net/", &["Sec-Fetch-Dest: document"]), "403", "blocked page load");
+        assert_json_pruned();
         // A site that can't be reached gets a 502, and the detailed log says why
         assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": true }))["ok"], true);
         assert_eq!(curl("https://self-signed.badssl.com/", &[]), "502", "bad upstream cert refused");
@@ -237,6 +271,12 @@ fn proxy_end_to_end() {
             assert!(dom.contains("h1{display:none!important}"), "hide rule injected");
             assert!(!dom.contains("documentation examples"), "procedural :has-text():remove() ran");
             assert!(!dom.contains("<html lang="), "AdGuard remove-attr scriptlet ran");
+
+            // The page script's address is answered by Coffee Filter with selectors, never sent to the site
+            let endpoint = dom.split("const endpoint = \"").nth(1).and_then(|rest| rest.split('"').next()).expect("generic rules address in the page");
+            assert!(endpoint.starts_with("/.coffee-filter-"), "{endpoint}");
+            let body = r#"{"url":"https://example.com/","classes":["central-textlogo","nothing-here"]}"#;
+            assert_eq!(curl_post(&format!("https://example.com{endpoint}"), body), r#"[".central-textlogo"]"#);
         }
         if let Some(dom) = chrome_dom_with("https://example.com/", false) {
             assert!(dom.contains("h1{display:none!important}"), "a browser on Windows' settings goes through the PAC script into Coffee Filter");
@@ -244,6 +284,14 @@ fn proxy_end_to_end() {
         if let Some(dom) = chrome_dom("https://www.dropbox.com/") {
             assert!(dom.contains("<script nonce="), "script injected");
             assert!(!dom.contains("<footer"), "injected script ran despite Dropbox's CSP");
+            assert!(dom.contains(".dwg-stack__item{display:none!important}"), "generic rule fetched and applied under Dropbox's CSP");
+        }
+
+        // Generic rules: the page script reports the class names it sees, and only matching
+        // generic rules come back and hide them
+        if let Some(dom) = chrome_dom("https://www.wikipedia.org/") {
+            assert!(dom.contains(".central-textlogo{display:none!important}"), "generic class rule hides Wikipedia's logo");
+            assert!(!dom.contains(".dwg-stack__item{display"), "rules for classes the page doesn't use aren't sent");
         }
 
         // Zen's never-decrypted sites are tunneled untouched, so their rules never apply
@@ -295,6 +343,19 @@ fn proxy_end_to_end() {
         let status = core.send(json!({ "cmd": "status" }))["status"].clone();
         assert!(status["blocked"].as_u64().unwrap() >= 1);
         assert!(status["allowed"].as_u64().unwrap() >= 1);
+        for list in ["exclusions", "excluded_apps", "lists", "userscripts"] {
+            assert!(status[list].is_array(), "full status has {list}");
+        }
+
+        // Brief status (for polling) leaves out the settings lists and keeps everything else
+        let brief = core.send(json!({ "cmd": "status", "brief": true }))["status"].clone();
+        for list in ["exclusions", "excluded_apps", "lists", "userscripts"] {
+            assert!(brief.get(list).is_none(), "brief status leaves out {list}");
+        }
+        for field in ["running", "cert_installed", "cert_renewal", "blocked", "allowed", "rules", "port", "problems", "detailed_log"] {
+            assert!(brief.get(field).is_some(), "brief status keeps {field}");
+        }
+        assert_eq!(brief["running"], true);
 
         // A public name that points at this PC is refused for tunnels on other ports (DNS rebinding)
         assert_eq!(connect_code("https://localtest.me:8443/"), "403", "localtest.me resolves to 127.0.0.1");
@@ -313,9 +374,11 @@ fn proxy_end_to_end() {
         assert!(core.child.wait().unwrap().success());
         assert_eq!(proxy_state(), before);
 
-        // Crash: settings stay ours until the next launch restores them
+        // Crash: settings stay ours until the next launch restores them. This launch loads the
+        // saved engine, and its $jsonprune rules with it
         let (mut core, _) = Core::spawn(&profile);
         assert_eq!(core.send(json!({ "cmd": "start" }))["ok"], true);
+        assert_json_pruned();
         core.child.kill().unwrap();
         let _ = core.child.wait();
         assert!(proxy_state().2.is_some_and(|p| p.starts_with(&format!("http://127.0.0.1:{PORT}/proxy-"))), "still ours until next launch");

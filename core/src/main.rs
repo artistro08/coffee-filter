@@ -10,8 +10,12 @@ mod ca;
 mod config;
 mod cosmetic;
 mod filter;
+mod lists;
+mod log;
+mod net;
 mod pressure;
 mod problems;
+mod prune;
 mod sysproxy;
 mod upstream;
 mod userscripts;
@@ -24,7 +28,6 @@ use hudsucker::{
     tokio_tungstenite::Connector,
 };
 use hyper_util::client::legacy::connect::HttpConnector;
-use rustls_platform_verifier::BuilderVerifierExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -50,7 +53,11 @@ use windows::{
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 enum Command {
-    Status,
+    /// `brief` leaves out the settings lists (see `App::status`), for polling.
+    Status {
+        #[serde(default)]
+        brief: bool,
+    },
     Start,
     Stop,
     InstallCert,
@@ -145,9 +152,12 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> io::Result<T> + Send
 }
 
 impl App {
-    fn status(&self) -> Value {
+    /// The status sent with every reply. `brief` leaves out the settings lists that only change
+    /// when a command changes them (exclusions, excluded_apps, lists, userscripts), so polling
+    /// stays small.
+    fn status(&self, brief: bool) -> Value {
         self.shared.problems.save_if_changed();
-        json!({
+        let mut status = json!({
             "running":        self.running.is_some(),
             "cert_installed": self.cert_installed,
             "cert_renewal":   self.cert_renewal,
@@ -155,13 +165,16 @@ impl App {
             "allowed":        self.shared.allowed.load(Ordering::Relaxed),
             "rules":          self.rules,
             "port":           self.config.port,
-            "exclusions":     self.config.exclusions,
-            "excluded_apps":  self.config.excluded_apps,
-            "lists":          self.config.lists,
-            "userscripts":    self.config.userscripts,
             "problems":       self.shared.problems.list(),
             "detailed_log":   self.config.detailed_log,
-        })
+        });
+        if !brief {
+            status["exclusions"]    = json!(self.config.exclusions);
+            status["excluded_apps"] = json!(self.config.excluded_apps);
+            status["lists"]         = json!(self.config.lists);
+            status["userscripts"]   = json!(self.config.userscripts);
+        }
+        status
     }
 
     fn save(&self) -> Result<(), String> {
@@ -173,14 +186,24 @@ impl App {
         self.cert_renewal   = if self.cert_installed { ca::renewal_reason() } else { None };
     }
 
+    /// Install, remove, or renew the certificate (UAC prompts) off the proxy's worker threads,
+    /// then look at the trust store again. `refused` is the message when it didn't happen.
+    async fn cert_step(&mut self, step: fn() -> io::Result<bool>, refused: &str) -> Result<(), String> {
+        let done = blocking(step).await;
+        self.refresh_cert();
+        if done? { Ok(()) } else { Err(refused.into()) }
+    }
+
     /// Rebuild the engine; returns downloads that failed along the way.
     async fn rebuild(&mut self) -> Vec<String> {
-        let (engine, rules, errors) = filter::build_engine(&self.config).await;
+        let built = lists::build_engine(&self.config).await;
         // Swap under the lock, free the old engine after releasing it
-        let old = std::mem::replace(&mut *self.shared.engine.write().unwrap(), Arc::new(engine));
+        let old = std::mem::replace(&mut *self.shared.engine.write().unwrap(), Arc::new(built.engine));
         drop(old);
-        self.rules = rules;
-        errors
+        built.prune.log_dropped(&self.shared.trace);
+        *self.shared.prune.write().unwrap() = Arc::new(built.prune);
+        self.rules = built.rules;
+        built.errors
     }
 
     /// Save the excluded apps and use them from the next connection on.
@@ -206,26 +229,28 @@ impl App {
         }
 
         let issuer   = blocking(ca::load_or_create).await?;
-        let ca       = ca::LeafAuthority::new(issuer, aws_lc_rs::default_provider()).map_err(|e| e.to_string())?;
+        let ca       = ca::LeafAuthority::new(issuer, aws_lc_rs::default_provider(), self.shared.leaves.clone()).map_err(|e| e.to_string())?;
         let listener = bind_exclusive(self.config.port).map_err(|e| format!("Port {} unavailable: {e}", self.config.port))?;
         let (tx, rx) = oneshot::channel();
 
         // WebSockets: verify sites with Windows' own certificate check, so Coffee Filter accepts
         // and rejects exactly what a browser on this PC would (including work or custom roots)
-        let tls = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+        let verifier = upstream::windows_verifier().map_err(|e| e.to_string())?;
+        let tls      = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
             .with_safe_default_protocol_versions()
-            .and_then(|b| b.with_platform_verifier())
             .map_err(|e| e.to_string())?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
             .with_no_client_auth();
         // Pages: Chrome's TLS handshake, so bot protection sees the browser it expects, with
         // Windows checking certificates the same way (see upstream.rs). HTTP/2 when the site
         // supports it (one connection, many requests at once). No Nagle delay on small writes.
         // Public names that resolve to this PC or the home network are refused, so a web page
         // can't use the proxy to reach local devices (DNS rebinding).
-        let mut http = HttpConnector::new_with_resolver(filter::PublicOnly::default());
+        let mut http = HttpConnector::new_with_resolver(net::PublicOnly::default());
         http.enforce_http(false);
         http.set_nodelay(true);
-        let https = upstream::connector(http)?;
+        let https = upstream::connector(http).map_err(|e| e.to_string())?;
 
         // Idle connections to sites are kept 90 seconds (hyper's default; browsers keep theirs
         // longer), so clicking on after reading a page reuses the connection instead of a new
@@ -264,7 +289,7 @@ impl App {
         });
 
         let pac_path = sysproxy::new_pac_path();
-        *self.shared.pac.write().unwrap() = (pac_path.clone(), sysproxy::pac_script(self.config.port));
+        *self.shared.pac.write().unwrap() = filter::Pac { path: pac_path.clone(), script: sysproxy::pac_script(self.config.port) };
         self.running = Some((tx, handle));
         if let Err(e) = sysproxy::enable(self.config.port, &pac_path) {
             // Don't leave a proxy running (and the port taken) that Windows isn't using
@@ -288,37 +313,20 @@ impl App {
 
     async fn run(&mut self, cmd: Command) -> Result<(), String> {
         match cmd {
-            Command::Status => Ok(()),
+            Command::Status { .. } => Ok(()),
             Command::Start => self.start().await,
             Command::Stop => self.stop().await,
-            Command::InstallCert => {
-                let installed = blocking(ca::install).await;
-                self.refresh_cert();
-                match installed? {
-                    true => Ok(()),
-                    false => Err("Certificate was not installed.".into()),
-                }
-            }
+            Command::InstallCert => self.cert_step(ca::install, "Certificate was not installed.").await,
             Command::UninstallCert => {
                 self.stop().await?;
-                let removed = blocking(ca::uninstall).await;
-                self.refresh_cert();
-                match removed? {
-                    true => Ok(()),
-                    false => Err("Certificate was not removed.".into()),
-                }
+                self.cert_step(ca::uninstall, "Certificate was not removed.").await
             }
             Command::RenewCert => {
                 self.stop().await?;
-                let renewed = blocking(ca::renew).await;
-                self.refresh_cert();
-                match renewed? {
-                    true => Ok(()),
-                    false => Err("Certificate was not renewed.".into()),
-                }
+                self.cert_step(ca::renew, "Certificate was not renewed.").await
             }
             Command::UpdateLists => {
-                let (mut errors, script_errors) = tokio::join!(filter::download_lists(&self.config), userscripts::download_all(&self.config.userscripts));
+                let (mut errors, script_errors) = tokio::join!(lists::download_lists(&self.config), userscripts::download_all(&self.config.userscripts));
                 errors.extend(script_errors);
                 errors.extend(self.rebuild().await);
                 errors.extend(self.reload_userscripts().await);
@@ -403,6 +411,8 @@ impl App {
                 self.config.detailed_log = enabled;
                 self.save()?;
                 self.shared.trace.set(enabled);
+                // Rules that couldn't be used were only noted while the log was on
+                self.shared.prune.read().unwrap().log_dropped(&self.shared.trace);
                 Ok(())
             }
             Command::AddUserscript { url } => {
@@ -414,7 +424,7 @@ impl App {
                 if self.config.userscripts.iter().any(|s| s.url == url) {
                     return Err("That userscript is already added.".into());
                 }
-                let client = filter::client().map_err(|e| e.to_string())?;
+                let client = lists::client().map_err(|e| e.to_string())?;
                 let header = userscripts::download(&client, &url).await?;
                 if self.config.userscripts.iter().any(|s| s.name == header.name) {
                     userscripts::forget(&url);
@@ -443,6 +453,12 @@ impl App {
             }
         }
     }
+}
+
+/// Write one JSON line to the app. A broken pipe is noticed by the command loop's next read.
+async fn send(stdout: &mut tokio::io::Stdout, value: &Value) {
+    let _ = stdout.write_all(format!("{value}\n").as_bytes()).await;
+    let _ = stdout.flush().await;
 }
 
 /// Resolves when Windows asks this process to end: Ctrl+C/Break, its console closing,
@@ -492,36 +508,38 @@ async fn main() {
     }
 
     let (config, warning) = Config::load();
-    let (engine, rules, list_errors) = filter::build_engine(&config).await;
-    let (scripts, script_errors)     = userscripts::load(&config).await;
+    let built                    = lists::build_engine(&config).await;
+    let (scripts, script_errors) = userscripts::load(&config).await;
 
     // A damaged settings file or downloads that failed on first run are shown in the app
-    let problems_at_start: Vec<String> = warning.into_iter().chain(list_errors).chain(script_errors).collect();
+    let problems_at_start: Vec<String> = warning.into_iter().chain(built.errors).chain(script_errors).collect();
     let warning = (!problems_at_start.is_empty()).then(|| problems_at_start.join("\n"));
     let shared = Arc::new(Shared {
-        engine:      RwLock::new(Arc::new(engine)),
-        pac:         RwLock::new((String::new(), String::new())),
-        exclusions:  RwLock::new(config.exclusions.clone()),
-        userscripts: RwLock::new(Arc::new(scripts)),
-        blocked:     Default::default(),
-        allowed:     Default::default(),
-        log:         Default::default(),
-        trace:       Default::default(),
-        resolver:    filter::resolver_client().expect("HTTP client"),
-        apps:        RwLock::new(Arc::new(config.excluded_apps.clone())),
-        app_cache:   Default::default(),
+        engine:       RwLock::new(Arc::new(built.engine)),
+        prune:        RwLock::new(Arc::new(built.prune)),
+        pac:          Default::default(),
+        generic_path: cosmetic::new_generic_path(),
+        exclusions:   RwLock::new(config.exclusions.clone()),
+        userscripts:  RwLock::new(Arc::new(scripts)),
+        blocked:      Default::default(),
+        allowed:      Default::default(),
+        log:          Default::default(),
+        trace:        Default::default(),
+        resolver:     filter::resolver_client().expect("HTTP client"),
+        apps:         RwLock::new(Arc::new(config.excluded_apps.clone())),
+        app_cache:    Default::default(),
         problems,
+        leaves:       ca::LeafCache::new(),
     });
     shared.trace.set(config.detailed_log);
+    shared.prune.read().unwrap().log_dropped(&shared.trace);
     pressure::watch_memory(shared.clone());
-    let mut app = App { config, shared, rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
+    let mut app = App { config, shared, rules: built.rules, running: None, cert_installed: false, cert_renewal: None, reply_log: None };
     app.refresh_cert();
 
     let mut stdout = tokio::io::stdout();
     let mut lines  = BufReader::new(tokio::io::stdin()).lines();
-    let ready      = json!({ "ok": warning.is_none(), "event": "ready", "error": warning, "status": app.status() });
-    let _ = stdout.write_all(format!("{ready}\n").as_bytes()).await;
-    let _ = stdout.flush().await;
+    send(&mut stdout, &json!({ "ok": warning.is_none(), "event": "ready", "error": warning, "status": app.status(false) })).await;
 
     // Command Loop. A host that just started having problems is announced between replies
     // ({"event":"problem"}), so the app can notify without polling.
@@ -532,8 +550,7 @@ async fn main() {
         let line = tokio::select! {
             line = lines.next_line() => line,
             Some(problem) = found.recv() => {
-                let _ = stdout.write_all(format!("{}\n", json!({ "ok": true, "event": "problem", "problem": problem })).as_bytes()).await;
-                let _ = stdout.flush().await;
+                send(&mut stdout, &json!({ "ok": true, "event": "problem", "problem": problem })).await;
                 continue;
             }
             _ = &mut ending => break,
@@ -542,25 +559,26 @@ async fn main() {
             Ok(Some(line)) => line,
             // A garbled line is answered as an error; only a closed or broken pipe ends the core
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                let _ = stdout.write_all(format!("{}\n", json!({ "ok": false, "error": "unreadable command" })).as_bytes()).await;
-                let _ = stdout.flush().await;
+                send(&mut stdout, &json!({ "ok": false, "error": "unreadable command" })).await;
                 continue;
             }
             _ => break,
         };
 
         let mut reply = match serde_json::from_str::<Command>(&line) {
-            Ok(cmd) => match app.run(cmd).await {
-                Ok(()) => json!({ "ok": true, "status": app.status() }),
-                Err(e) => json!({ "ok": false, "error": e, "status": app.status() }),
-            },
+            Ok(cmd) => {
+                let brief = matches!(cmd, Command::Status { brief: true });
+                match app.run(cmd).await {
+                    Ok(()) => json!({ "ok": true, "status": app.status(brief) }),
+                    Err(e) => json!({ "ok": false, "error": e, "status": app.status(brief) }),
+                }
+            }
             Err(e) => json!({ "ok": false, "error": e.to_string() }),
         };
         if let Some(log) = app.reply_log.take() {
             reply["log"] = log;
         }
-        let _ = stdout.write_all(format!("{reply}\n").as_bytes()).await;
-        let _ = stdout.flush().await;
+        send(&mut stdout, &reply).await;
     }
 
     let _ = app.stop().await;
@@ -584,6 +602,8 @@ mod tests {
     #[test]
     fn commands_parse_from_json() {
         assert!(matches!(serde_json::from_str(r#"{"cmd":"start"}"#), Ok(Command::Start)));
+        assert!(matches!(serde_json::from_str(r#"{"cmd":"status"}"#), Ok(Command::Status { brief: false })), "full status unless asked");
+        assert!(matches!(serde_json::from_str(r#"{"cmd":"status","brief":true}"#), Ok(Command::Status { brief: true })));
         assert!(matches!(serde_json::from_str(r#"{"cmd":"renew_cert"}"#), Ok(Command::RenewCert)));
         assert!(matches!(
             serde_json::from_str(r#"{"cmd":"set_detailed_log","enabled":true}"#),

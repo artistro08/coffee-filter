@@ -152,6 +152,49 @@ public sealed class WindowTests(AppFixture app)
     }
 
     [Fact]
+    public void TurningAListOnOrOffKeepsItsSwitchAndUpdatesTheCount()
+    {
+        app.GoHome();
+        var group  = app.Expand("General");
+        var toggle = Retry.WhileNull(() => group.FindFirstDescendant(c => c.ByControlType(ControlType.Button).And(c.ByClassName("ToggleSwitch"))), TimeSpan.FromSeconds(5)).Result
+            ?? throw new InvalidOperationException("No list switch in General.");
+        var name   = toggle.Name;
+        var id     = toggle.Properties.RuntimeId.Value;
+        var before = toggle.Patterns.Toggle.Pattern.ToggleState.Value;
+
+        // The group's "x of y on" text, read from the group as it is on screen now
+        string? Count() => app.Window.FindAllDescendants(c => c.ByName("General"))
+            .FirstOrDefault(e => e.Patterns.ExpandCollapse.IsSupported)?
+            .FindAllDescendants(c => c.ByControlType(ControlType.Text))
+            .Select(t => t.Name)
+            .FirstOrDefault(n => n.Contains(" of ") && n.EndsWith(" on"));
+        var counted = Count();
+        Assert.NotNull(counted);
+
+        AutomationElement? Switch() => app.Window.FindAllDescendants(c => c.ByName(name).And(c.ByClassName("ToggleSwitch"))).FirstOrDefault();
+        try
+        {
+            toggle.Patterns.Toggle.Pattern.Toggle();
+            Assert.True(Retry.WhileFalse(() => Count() != counted, TimeSpan.FromSeconds(20)).Success, "the group's count didn't change");
+
+            // The same switch, updated in place: a rebuilt group would hand out a new one (and lose focus)
+            var after = Switch() ?? throw new InvalidOperationException($"\"{name}\" is gone.");
+            Assert.Equal(id, after.Properties.RuntimeId.Value);
+            Assert.NotEqual(before, after.Patterns.Toggle.Pattern.ToggleState.Value);
+        }
+        finally
+        {
+            // Back the way it was
+            var now = Switch();
+            if (now is not null && now.Patterns.Toggle.Pattern.ToggleState.Value != before)
+            {
+                now.Patterns.Toggle.Pattern.Toggle();
+            }
+        }
+        Assert.True(Retry.WhileFalse(() => Count() == counted, TimeSpan.FromSeconds(20)).Success, "the list wasn't put back");
+    }
+
+    [Fact]
     public void ExcludedSitesHasBulkAddInsideTheGroup()
     {
         app.GoHome();

@@ -75,7 +75,7 @@ impl Problems {
     /// Whether an app refused Coffee Filter's certificate for `host` (or a site above it), so
     /// it's tunneled instead of decrypted.
     pub fn passes_through(&self, host: &str) -> bool {
-        crate::filter::is_excluded(&self.transparent.read().unwrap(), host)
+        crate::net::on_domain_list(&self.transparent.read().unwrap(), host)
     }
 
     pub fn record(&self, host: &str, kind: &'static str, detail: String) {
@@ -185,14 +185,21 @@ struct Fields {
 }
 
 impl Visit for Fields {
+    /// Plain strings are taken as they are: formatting them for debugging would add quotes
+    /// and escapes that would then have to come off again.
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.record_debug(field, &value);
+        match field.name() {
+            "uri" => self.uri = Some(value.to_string()),
+            "message" => self.message = value.to_string(),
+            "error" => self.error = value.to_string(),
+            _ => {}
+        }
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
         // Only format the fields we read; spans carry several others per request
         match field.name() {
-            "uri" => self.uri = Some(format!("{value:?}").trim_matches('"').to_string()),
+            "uri" => self.uri = Some(format!("{value:?}")),
             "message" => self.message = format!("{value:?}"),
             "error" => self.error = format!("{value:?}"),
             _ => {}
@@ -363,5 +370,20 @@ mod tests {
         let list = problems.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].host, "pinned.example.com");
+    }
+
+    #[test]
+    fn plain_string_fields_are_read_as_they_are() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let problems   = Arc::new(Problems::default());
+        let subscriber = tracing_subscriber::registry().with(ProblemLayer(problems.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("proxy", uri = "Quoted.Example.com:443");
+            let _in  = span.enter();
+            tracing::error!(error = "received fatal alert: \"BadCertificate\"", "Failed to establish TLS connection");
+        });
+        let list = problems.list();
+        assert_eq!(list.len(), 1, "a string error is read without debug escapes in the way");
+        assert_eq!(list[0].host, "quoted.example.com");
     }
 }

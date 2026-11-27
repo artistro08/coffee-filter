@@ -5,7 +5,7 @@
 # Needs: build.ps1 run first. Closes a running Coffee Filter to replace it.
 #
 # Windows only installs a changed package under a higher version: bump the fourth number in
-# app\CoffeeFilter.csproj and app\Package.appxmanifest before building (see CLAUDE.md).
+# app\Package.appxmanifest before building (see CLAUDE.md).
 
 $ErrorActionPreference = 'Stop'
 $root    = Split-Path $PSScriptRoot -Parent
@@ -17,7 +17,10 @@ Add-AppxPackage $msix -ForceApplicationShutdown
 $family = (Get-AppxPackage Artistro08.CoffeeFilter).PackageFamilyName
 Start-Process "shell:AppsFolder\$family!App"
 
-# The core loads its filter lists before the window shows them
-Start-Sleep 10
+# Wait for the core to start (up to 30 seconds), then give it a moment to load its filter lists
+$deadline = (Get-Date).AddSeconds(30)
+while (-not (Get-Process coffee-filter-core -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+if (-not (Get-Process coffee-filter-core -ErrorAction SilentlyContinue)) { throw 'the filter core didn''t start within 30 seconds' }
+Start-Sleep 2
 "installed $((Get-AppxPackage Artistro08.CoffeeFilter).Version)"
 Get-Process CoffeeFilter, coffee-filter-core -ErrorAction SilentlyContinue | Select-Object Name, Responding | Format-Table -AutoSize

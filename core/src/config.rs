@@ -82,13 +82,28 @@ pub fn data_dir() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Bytes as lowercase hex (nonces, random paths, hashes, thumbprints).
+pub fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// The temp file a new version of `path` is written to first: name.ext.tmp, so two files
+/// with the same stem (engine.dat, engine.key) never share one.
+pub fn temp_path(path: &Path) -> PathBuf {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    PathBuf::from(temp)
+}
+
 /// Write a file so readers only ever see the old or the new contents, never half of
 /// it: write a temp file next to it, then rename over (atomic on NTFS).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    // name.ext.tmp, so two files with the same stem (engine.dat, engine.key) never share a temp file
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
-    let temp = PathBuf::from(temp);
+    let temp = temp_path(path);
 
     // On disk before the swap: NTFS journals the rename, not the data, so a power cut right
     // after could otherwise leave an empty file in place of the old one
@@ -135,6 +150,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.lists[0].kind, "custom");
+    }
+
+    #[test]
+    fn hex_is_lowercase_and_padded() {
+        assert_eq!(hex(&[0x00, 0x0f, 0xab, 0xff]), "000fabff");
+        assert_eq!(hex(&[]), "");
     }
 
     #[test]

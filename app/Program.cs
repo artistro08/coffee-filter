@@ -8,12 +8,8 @@ namespace CoffeeFilter;
 /// Single instance entry point. A second launch (or a coffee-filter:// link) hands off
 /// to the running app, which shows its window, so only one core ever runs.
 /// </summary>
-public static partial class Program
+public static class Program
 {
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool AllowSetForegroundWindow(uint processId);
-
     [STAThread]
     private static int Main()
     {
@@ -24,7 +20,7 @@ public static partial class Program
         {
             // This launch is the one Windows lets come to the front; pass that on, so the window
             // (and an install dialog) opens on top instead of behind the browser
-            AllowSetForegroundWindow(instance.ProcessId);
+            Native.AllowSetForegroundWindow(instance.ProcessId);
             var args = AppInstance.GetCurrent().GetActivatedEventArgs();
             Task.Run(() => instance.RedirectActivationToAsync(args).AsTask()).Wait();
             return 0;

@@ -9,7 +9,7 @@
 
 use crate::{
     config::{Config, Userscript, data_dir, write_atomic},
-    filter,
+    lists, net,
 };
 use http_body_util::{BodyExt, Limited};
 use hudsucker::{
@@ -26,8 +26,9 @@ const RUNNER_JS: &str = include_str!("userscripts.js");
 
 /// One address rule from a script's header.
 enum Rule {
-    /// `@match`: Chrome-style `scheme://host/path` pattern
-    Match(String),
+    /// `@match`: Chrome-style `scheme://host/path` pattern, split once when the script loads.
+    /// None for a pattern that can't be read, which matches nothing.
+    Match(Option<MatchPattern>),
     /// `@include` / `@exclude`: `*` wildcard over the whole address
     Glob(String),
     /// `@include /regex/`
@@ -86,9 +87,29 @@ pub fn parse_header(code: &str) -> Option<Header> {
     (!header.name.is_empty()).then_some(header)
 }
 
+/// A `@match` pattern's parts.
+struct MatchPattern {
+    /// `<all_urls>`: every http and https page.
+    all_urls: bool,
+    scheme:   String,
+    /// Lowercase, without a port.
+    host:     String,
+    path:     String,
+}
+
+fn match_parts(pattern: &str) -> Option<MatchPattern> {
+    if pattern == "<all_urls>" {
+        return Some(MatchPattern { all_urls: true, scheme: String::new(), host: String::new(), path: String::new() });
+    }
+    let (scheme, rest) = pattern.split_once("://")?;
+    let (host, path)   = rest.split_once('/').map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
+    let host           = host.split(':').next().unwrap_or("").to_ascii_lowercase();
+    Some(MatchPattern { all_urls: false, scheme: scheme.to_string(), host, path })
+}
+
 fn rule(value: &str, is_match: bool) -> Option<Rule> {
     if is_match {
-        return Some(Rule::Match(value.to_string()));
+        return Some(Rule::Match(match_parts(value)));
     }
     match value.strip_prefix('/').and_then(|v| v.strip_suffix('/')) {
         // Case-insensitive, like Tampermonkey
@@ -124,30 +145,27 @@ fn glob(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|&c| c == b'*')
 }
 
-/// Chrome match pattern: `*://*.example.com/path*`, or `<all_urls>`.
-fn match_pattern(pattern: &str, uri: &Uri) -> bool {
+/// Chrome match pattern: `*://*.example.com/path*`, or `<all_urls>`. Runs for every script on
+/// every page, so it compares without making copies.
+fn match_pattern(pattern: &MatchPattern, uri: &Uri) -> bool {
     let scheme = uri.scheme_str().unwrap_or("");
-    if pattern == "<all_urls>" {
-        return matches!(scheme, "http" | "https");
+    let web    = matches!(scheme, "http" | "https");
+    if pattern.all_urls {
+        return web;
     }
-    let Some((want_scheme, rest)) = pattern.split_once("://") else { return false };
-    let (want_host, want_path) = rest.split_once('/').map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
 
-    let host       = uri.host().unwrap_or("").to_ascii_lowercase();
-    let want_host  = want_host.to_ascii_lowercase();
-    let want_host  = want_host.split(':').next().unwrap_or("");
-    let scheme_ok  = if want_scheme == "*" { matches!(scheme, "http" | "https") } else { want_scheme == scheme };
-    let host_ok    = want_host == "*"
-        || want_host == host
-        || want_host.strip_prefix("*.").is_some_and(|base| host == base || host.strip_suffix(base).is_some_and(|sub| sub.ends_with('.')));
-    let path       = uri.path_and_query().map_or("/", |p| p.as_str());
+    let host      = uri.host().unwrap_or("");
+    let want      = pattern.host.as_str();
+    let scheme_ok = if pattern.scheme == "*" { web } else { pattern.scheme == scheme };
+    let host_ok   = want == "*" || want.eq_ignore_ascii_case(host) || want.strip_prefix("*.").is_some_and(|base| net::on_domain_list(&[base], host));
+    let path      = uri.path_and_query().map_or("/", |p| p.as_str());
 
-    scheme_ok && host_ok && glob(&want_path, path)
+    scheme_ok && host_ok && glob(&pattern.path, path)
 }
 
 fn rule_matches(rule: &Rule, url: &str, uri: &Uri) -> bool {
     match rule {
-        Rule::Match(p) => match_pattern(p, uri),
+        Rule::Match(p) => p.as_ref().is_some_and(|p| match_pattern(p, uri)),
         Rule::Glob(p) => glob(p, url),
         Rule::Regex(re) => re.is_match(url),
     }
@@ -206,7 +224,7 @@ when({start}, () => {{ try {{
 /// Download a script and its `@require` files and cache them. Returns its header.
 /// Only `https://` is accepted for both, so nothing can be swapped in on the way.
 pub async fn download(client: &reqwest::Client, url: &str) -> Result<Header, String> {
-    let bytes  = filter::fetch(client, url, MAX_SCRIPT_BYTES).await.map_err(|e| e.to_string())?;
+    let bytes  = lists::fetch(client, url, MAX_SCRIPT_BYTES).await.map_err(|e| e.to_string())?;
     let code   = String::from_utf8(bytes).map_err(|_| "That file isn't a userscript.")?;
     let header = parse_header(&code).ok_or("That file isn't a userscript (no ==UserScript== header with a @name).")?;
 
@@ -215,7 +233,7 @@ pub async fn download(client: &reqwest::Client, url: &str) -> Result<Header, Str
         if !req.starts_with("https://") {
             return Err(format!("{}: @require {req} must use https://", header.name));
         }
-        let bytes = filter::fetch(client, req, MAX_SCRIPT_BYTES).await.map_err(|e| format!("{}: @require {req}: {e}", header.name))?;
+        let bytes = lists::fetch(client, req, MAX_SCRIPT_BYTES).await.map_err(|e| format!("{}: @require {req}: {e}", header.name))?;
         requires.push_str(&String::from_utf8_lossy(&bytes));
         requires.push_str(";\n");
         if requires.len() > MAX_SCRIPT_BYTES {
@@ -231,7 +249,7 @@ pub async fn download(client: &reqwest::Client, url: &str) -> Result<Header, Str
 
 /// Re-download every userscript. Returns one message per failure.
 pub async fn download_all(scripts: &[Userscript]) -> Vec<String> {
-    let client = match filter::client() {
+    let client = match lists::client() {
         Ok(c) => c,
         Err(e) => return vec![e.to_string()],
     };
@@ -391,6 +409,20 @@ document.title = 'hi';";
         assert!(for_page(std::slice::from_ref(&s), "https://www.example.com/other").is_empty());
         assert!(for_page(std::slice::from_ref(&s), "https://notexample.com/watch").is_empty());
         assert!(for_page(std::slice::from_ref(&s), "http://www.example.com/watch").is_empty(), "scheme is https only");
+    }
+
+    #[test]
+    fn match_patterns_are_read_once_and_compared_in_any_case() {
+        let code = "// ==UserScript==\n// @name M\n// @match *://*.Example.COM:8080/a*\n// @match not a pattern\n// ==/UserScript==\n";
+        let s    = build(&parse_header(code).unwrap(), "", code);
+        assert!(matches!(&s.includes[0], Rule::Match(Some(p)) if p.host == "*.example.com" && p.path == "/a*"));
+        assert_eq!(for_page(std::slice::from_ref(&s), "https://WWW.example.com/abc").len(), 1);
+        assert!(for_page(std::slice::from_ref(&s), "https://example.org/abc").is_empty());
+
+        // A pattern that can't be read matches nothing, and doesn't make the script run everywhere
+        let code = "// ==UserScript==\n// @name Bad\n// @match not a pattern\n// ==/UserScript==\n";
+        let s    = build(&parse_header(code).unwrap(), "", code);
+        assert!(for_page(std::slice::from_ref(&s), "https://anything.com/").is_empty());
     }
 
     #[test]

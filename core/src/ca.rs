@@ -23,6 +23,7 @@ use hudsucker::{
         crypto::CryptoProvider,
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
         server::ServerSessionMemoryCache,
+        sign::{CertifiedKey, SigningKey, SingleCertAndKey},
     },
 };
 use std::{
@@ -182,7 +183,7 @@ fn thumbprint() -> io::Result<[u8; 20]> {
 }
 
 fn thumbprint_hex() -> io::Result<String> {
-    Ok(thumbprint()?.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(crate::config::hex(&thumbprint()?))
 }
 
 // =========================================================================
@@ -374,23 +375,50 @@ pub fn renew() -> io::Result<bool> {
 /// its own, sized for 256 sessions up front (about 20 KB, nearly all of it empty), which
 /// was most of what a cached host cost. A session only ever resumes for the site name it
 /// was made for (rustls checks the name, as RFC 6066 requires), so sharing changes nothing else.
+/// The leaf key is loaded for signing once and shared by every host's certificate.
 pub struct LeafAuthority {
     issuer:   Issuer<'static, KeyPair>,
     leaf_key: KeyPair,
+    signer:   Arc<dyn SigningKey>,
     provider: Arc<CryptoProvider>,
-    sessions: Arc<ServerSessionMemoryCache>,
-    cache:    Mutex<HashMap<String, (Instant, Arc<ServerConfig>)>>,
+    cache:    Arc<LeafCache>,
+}
+
+/// The site certificates made so far and the TLS sessions to resume, kept outside the
+/// authority so the low-memory handler can drop them (both are rebuilt on the next visit).
+pub struct LeafCache {
+    sessions: Mutex<Arc<ServerSessionMemoryCache>>,
+    configs:  Mutex<HashMap<String, (Instant, Arc<ServerConfig>)>>,
+}
+
+impl LeafCache {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { sessions: Mutex::new(ServerSessionMemoryCache::new(LEAF_SESSIONS_MAX)), configs: Mutex::default() })
+    }
+
+    /// Forget every site certificate and TLS session. Connections already open keep theirs.
+    pub fn clear(&self) {
+        self.configs.lock().unwrap().clear();
+        *self.sessions.lock().unwrap() = ServerSessionMemoryCache::new(LEAF_SESSIONS_MAX);
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.configs.lock().unwrap().len()
+    }
 }
 
 impl LeafAuthority {
-    pub fn new(issuer: Issuer<'static, KeyPair>, provider: CryptoProvider) -> io::Result<Self> {
-        Ok(Self {
-            issuer,
-            leaf_key: KeyPair::generate().map_err(io::Error::other)?,
-            provider: Arc::new(provider),
-            sessions: ServerSessionMemoryCache::new(LEAF_SESSIONS_MAX),
-            cache:    Mutex::new(HashMap::new()),
-        })
+    /// A new authority with a fresh leaf key. `cache` is emptied: what's in it was made with
+    /// the previous key and CA.
+    pub fn new(issuer: Issuer<'static, KeyPair>, provider: CryptoProvider, cache: Arc<LeafCache>) -> io::Result<Self> {
+        let leaf_key = KeyPair::generate().map_err(io::Error::other)?;
+        let signer   = provider
+            .key_provider
+            .load_private_key(PrivateKeyDer::from(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())))
+            .map_err(io::Error::other)?;
+        cache.clear();
+        Ok(Self { issuer, leaf_key, signer, provider: Arc::new(provider), cache })
     }
 
     /// A certificate for `host`, signed by the CA, carrying the leaf key.
@@ -417,16 +445,15 @@ impl LeafAuthority {
     }
 
     fn server_config(&self, host: &str) -> io::Result<Arc<ServerConfig>> {
-        let key    = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(self.leaf_key.serialize_der()));
-        let mut cfg = ServerConfig::builder_with_provider(self.provider.clone())
+        let certified = CertifiedKey::new(vec![self.leaf_cert(host)?], self.signer.clone());
+        let mut cfg   = ServerConfig::builder_with_provider(self.provider.clone())
             .with_safe_default_protocol_versions()
             .map_err(io::Error::other)?
             .with_no_client_auth()
-            .with_single_cert(vec![self.leaf_cert(host)?], key)
-            .map_err(io::Error::other)?;
+            .with_cert_resolver(Arc::new(SingleCertAndKey::from(certified)));
         // HTTP/2 first: browsers then send every request for a site over one connection
         cfg.alpn_protocols  = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        cfg.session_storage = self.sessions.clone();
+        cfg.session_storage = self.cache.sessions.lock().unwrap().clone();
         Ok(Arc::new(cfg))
     }
 }
@@ -435,7 +462,7 @@ impl CertificateAuthority for LeafAuthority {
     async fn gen_server_config(&self, authority: &Authority) -> Arc<ServerConfig> {
         let host = authority.host().to_ascii_lowercase();
 
-        if let Some((made, cfg)) = self.cache.lock().unwrap().get(&host)
+        if let Some((made, cfg)) = self.cache.configs.lock().unwrap().get(&host)
             && made.elapsed().as_secs() < LEAF_CACHE_SECS
         {
             return cfg.clone();
@@ -445,7 +472,7 @@ impl CertificateAuthority for LeafAuthority {
         // and the problem shows up in the app like any other refused connection
         let cfg = self.server_config(&host).unwrap_or_else(|_| self.server_config("invalid.invalid").expect("static host name"));
 
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.configs.lock().unwrap();
         // Full: drop only the oldest site, so the rest keep their certificates and TLS sessions
         if cache.len() >= LEAF_CACHE_MAX
             && let Some(oldest) = cache.iter().min_by_key(|(_, (made, _))| *made).map(|(h, _)| h.clone())
@@ -458,7 +485,7 @@ impl CertificateAuthority for LeafAuthority {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use hudsucker::rustls::{
         RootCertStore,
@@ -492,7 +519,7 @@ mod tests {
         let (ca_key, ca_cert) = new_ca().unwrap();
         let ca_public         = ca_key.public_key_pem();
         let issuer            = Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap();
-        let authority         = LeafAuthority::new(issuer, aws_lc_rs::default_provider()).unwrap();
+        let authority         = LeafAuthority::new(issuer, aws_lc_rs::default_provider(), LeafCache::new()).unwrap();
         let leaf              = authority.leaf_cert("example.com").unwrap();
 
         let mut roots = RootCertStore::empty();
@@ -534,18 +561,48 @@ mod tests {
     #[test]
     fn leaves_for_ip_hosts_use_ip_names() {
         let (ca_key, ca_cert) = new_ca().unwrap();
-        let authority = LeafAuthority::new(Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap(), aws_lc_rs::default_provider()).unwrap();
+        let authority = LeafAuthority::new(Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap(), aws_lc_rs::default_provider(), LeafCache::new()).unwrap();
         assert!(dump(&authority.leaf_cert("1.2.3.4").unwrap()).contains("IP Address=1.2.3.4"));
+    }
+
+    pub fn authority(cache: Arc<LeafCache>) -> LeafAuthority {
+        let (ca_key, ca_cert) = new_ca().unwrap();
+        LeafAuthority::new(Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap(), aws_lc_rs::default_provider(), cache).unwrap()
     }
 
     #[test]
     fn sites_share_one_session_store() {
-        let (ca_key, ca_cert) = new_ca().unwrap();
-        let authority = LeafAuthority::new(Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap(), aws_lc_rs::default_provider()).unwrap();
+        let authority = authority(LeafCache::new());
         let a = authority.server_config("a.com").unwrap();
         let b = authority.server_config("b.com").unwrap();
         assert!(a.session_storage.put(b"id".to_vec(), b"session".to_vec()));
         assert_eq!(b.session_storage.get(b"id"), Some(b"session".to_vec()), "one store for every site, not 256 empty slots each");
+    }
+
+    #[tokio::test]
+    async fn low_memory_drops_site_certificates_and_sessions() {
+        let cache     = LeafCache::new();
+        let authority = authority(cache.clone());
+        let a         = authority.gen_server_config(&Authority::from_static("a.com:443")).await;
+        assert_eq!(cache.len(), 1);
+        assert!(a.session_storage.put(b"id".to_vec(), b"session".to_vec()));
+
+        cache.clear();
+        assert_eq!(cache.len(), 0, "certificates dropped");
+        let b = authority.gen_server_config(&Authority::from_static("b.com:443")).await;
+        assert_eq!(b.session_storage.get(b"id"), None, "sessions dropped too");
+
+        // A new run (or a renewed CA) never serves certificates made with the old key
+        let _again = self::authority(cache.clone());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn every_site_signs_with_the_one_leaf_key() {
+        let authority = authority(LeafCache::new());
+        let _a = authority.server_config("a.com").unwrap();
+        let _b = authority.server_config("b.com").unwrap();
+        assert_eq!(Arc::strong_count(&authority.signer), 3, "both sites hold the one loaded key, not a copy each");
     }
 
     #[test]

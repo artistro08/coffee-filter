@@ -74,7 +74,7 @@ public sealed partial class Shortcuts
             {
                 cbSize        = (uint)sizeof(WNDCLASSEXW),
                 lpfnWndProc   = (nint)(delegate* unmanaged[Stdcall]<nint, uint, nint, nint, nint>)&WndProc,
-                hInstance     = GetModuleHandleW(null),
+                hInstance     = Native.GetModuleHandleW(null),
                 lpszClassName = (nint)name,
             };
             RegisterClassExW(windowClass);
@@ -226,9 +226,6 @@ public sealed partial class Shortcuts
     [LibraryImport("user32.dll")]
     private static partial nint DefWindowProcW(nint hwnd, uint message, nint wParam, nint lParam);
 
-    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint GetModuleHandleW(string? name);
-
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
@@ -264,7 +261,7 @@ public static unsafe partial class KeyCapture
     {
         Stop();
         s_callback = callback;
-        s_hook     = SetWindowsHookExW(WhKeyboardLl, &HookProc, GetModuleHandleW(0), 0);
+        s_hook     = SetWindowsHookExW(WhKeyboardLl, &HookProc, Native.GetModuleHandleW(null), 0);
         return s_hook != 0;
     }
 
@@ -324,7 +321,4 @@ public static unsafe partial class KeyCapture
 
     [LibraryImport("user32.dll")]
     private static partial nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial nint GetModuleHandleW(nint name);
 }

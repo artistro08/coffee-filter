@@ -15,13 +15,14 @@
 //!
 //! <https://github.com/ZenPrivacy/zen-desktop/blob/master/internal/proxy/clienthello.go>
 
-use crate::filter::PublicOnly;
+use crate::net::PublicOnly;
 use boring::ssl::{
     CertificateCompressionAlgorithm, CertificateCompressor, ConnectConfiguration, SslAlert, SslConnector, SslMethod, SslRef,
     SslSignatureAlgorithm as Sig, SslVerifyError, SslVerifyMode, SslVersion,
 };
 use hudsucker::rustls::{
-    client::danger::ServerCertVerifier,
+    DigitallySignedStruct, Error as TlsError, SignatureScheme,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::aws_lc_rs,
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
@@ -86,21 +87,21 @@ pub const H2_MAX_HEADER_LIST: u32   = 262_144;
 
 /// HTTPS connector for the proxy's upstream client: Chrome's handshake over a connection
 /// that refuses local addresses (`PublicOnly`), with Windows checking each certificate.
-pub fn connector(http: HttpConnector<PublicOnly>) -> Result<HttpsConnector<HttpConnector<PublicOnly>>, String> {
-    let verifier = Arc::new(rustls_platform_verifier::Verifier::new(Arc::new(aws_lc_rs::default_provider())).map_err(|e| e.to_string())?);
+pub fn connector(http: HttpConnector<PublicOnly>) -> Result<HttpsConnector<HttpConnector<PublicOnly>>, Error> {
+    let verifier = Arc::new(windows_verifier()?);
 
     // The handshake Chrome sends
-    let mut tls = SslConnector::builder(SslMethod::tls()).map_err(|e| e.to_string())?;
-    tls.set_min_proto_version(Some(SslVersion::TLS1_2)).map_err(|e| e.to_string())?;
-    tls.set_cipher_list(CIPHERS).map_err(|e| e.to_string())?;
-    tls.set_curves_list(GROUPS).map_err(|e| e.to_string())?;
-    tls.set_verify_algorithm_prefs(&SIGALGS).map_err(|e| e.to_string())?;
-    tls.set_alpn_protos(ALPN).map_err(|e| e.to_string())?;
+    let mut tls = SslConnector::builder(SslMethod::tls())?;
+    tls.set_min_proto_version(Some(SslVersion::TLS1_2))?;
+    tls.set_cipher_list(CIPHERS)?;
+    tls.set_curves_list(GROUPS)?;
+    tls.set_verify_algorithm_prefs(&SIGALGS)?;
+    tls.set_alpn_protos(ALPN)?;
     tls.set_grease_enabled(true);
     tls.set_permute_extensions(true);
     tls.enable_ocsp_stapling();
     tls.enable_signed_cert_timestamps();
-    tls.add_certificate_compression_algorithm(Brotli).map_err(|e| e.to_string())?;
+    tls.add_certificate_compression_algorithm(Brotli)?;
 
     // A resumed session skips the certificate unless asked; Chrome re-checks it, so do we
     // SAFETY: a valid SSL_CTX* owned by `tls` for the whole call.
@@ -111,7 +112,7 @@ pub fn connector(http: HttpConnector<PublicOnly>) -> Result<HttpsConnector<HttpC
     // small entry per site visited; it has no way to cap the number of sites yet
     let mut settings = HttpsLayerSettings::builder();
     settings.set_session_cache_capacity(2);
-    let mut https = HttpsLayer::with_connector_and_settings(tls, settings.build()).map_err(|e| e.to_string())?;
+    let mut https = HttpsLayer::with_connector_and_settings(tls, settings.build())?;
     https.set_callback(move |config, uri| {
         chrome_extras(config);
 
@@ -122,6 +123,49 @@ pub fn connector(http: HttpConnector<PublicOnly>) -> Result<HttpsConnector<HttpC
         Ok(())
     });
     Ok(https.layer(http))
+}
+
+/// Setup errors (BoringSSL, the Windows verifier); turned into the app's message once, in main.rs.
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+/// Windows' own certificate check, moved off the proxy's worker threads while it runs.
+pub fn windows_verifier() -> Result<InPlace<rustls_platform_verifier::Verifier>, Error> {
+    Ok(InPlace(rustls_platform_verifier::Verifier::new(Arc::new(aws_lc_rs::default_provider()))?))
+}
+
+/// A certificate check that may wait on the network (Windows fetches missing intermediates
+/// and revocation data) runs with `block_in_place`: the worker's other connections move to
+/// another thread while it waits, so a few slow sites can't stall every tab. Signature
+/// checks are pure math and run as they are.
+#[derive(Debug)]
+pub struct InPlace<V>(pub V);
+
+impl<V: ServerCertVerifier> ServerCertVerifier for InPlace<V> {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, TlsError> {
+        let check = || self.0.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
+        // block_in_place panics on a single-threaded runtime; there it just runs
+        let multi_thread = tokio::runtime::Handle::try_current().is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        if multi_thread { tokio::task::block_in_place(check) } else { check() }
+    }
+
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+        self.0.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+        self.0.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.supported_verify_schemes()
+    }
 }
 
 /// Per-connection parts of Chrome's handshake the safe API doesn't cover: ALPS (Chrome's
@@ -190,6 +234,48 @@ mod tests {
         }
         assert_eq!(at, TRUST_ANCHORS.len(), "the last ID ends exactly at the end");
         assert_eq!(count, 32);
+    }
+
+    /// A certificate check that waits like Windows fetching revocation data.
+    #[derive(Debug)]
+    struct Slow;
+
+    impl ServerCertVerifier for Slow {
+        fn verify_server_cert(&self, _: &CertificateDer<'_>, _: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> Result<ServerCertVerified, TlsError> {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn slow_certificate_checks_dont_stall_other_connections() {
+        // One worker, so a check that blocks it would hold up everything else
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
+        runtime.block_on(async {
+            let check = tokio::spawn(async {
+                let name = ServerName::try_from("a.com").unwrap();
+                InPlace(Slow).verify_server_cert(&CertificateDer::from(vec![]), &[], &name, &[], UnixTime::now()).is_ok()
+            });
+            // Let the check take the worker first
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            let started = std::time::Instant::now();
+            tokio::spawn(async {}).await.unwrap();
+            assert!(started.elapsed() < std::time::Duration::from_millis(300), "other work waited {:?} on the check", started.elapsed());
+            assert!(check.await.unwrap());
+        });
     }
 
     #[test]

@@ -210,7 +210,7 @@ public partial class App : Application
                 if (!_retriedRefusal)
                 {
                     _retriedRefusal = true;
-                    Core.Dispose();
+                    await Core.DisposeAsync();
                     await Task.Delay(3000);
                     _coreRefused = false;
                     StartCore(resumeBlocking);
@@ -290,7 +290,14 @@ public partial class App : Application
         {
             // Commands sent before the core's ready line would read it as their reply
             await _coreReady.Task;
+            var brief = args?["brief"] is not null;
             var reply = await Core.SendAsync(cmd, args);
+
+            // A brief status leaves the lists out (that's not empty): keep the ones already known
+            if (brief && reply.Status is { } fresh && Last?.Status is { } known)
+            {
+                fresh.KeepListsFrom(known);
+            }
 
             // Remember on/off for the next launch (Quit stops blocking without changing it)
             if (reply.Ok && cmd is "start" or "stop")
@@ -307,6 +314,12 @@ public partial class App : Application
             return null;
         }
     }
+
+    /// <summary>
+    /// A brief status: counters, on/off state, and problems, without the lists (the window's
+    /// 2-second check). Every command that changes a list replies with all of them.
+    /// </summary>
+    public Task<CoreReply?> RefreshAsync() => RunAsync("status", new JsonObject { ["brief"] = true }, showErrors: false);
 
     private void Publish(CoreReply reply, bool showErrors, bool lists)
     {
@@ -347,7 +360,7 @@ public partial class App : Application
         // An open window shows it right away
         if (_window is not null)
         {
-            _ = RunAsync("status", showErrors: false);
+            _ = RefreshAsync();
         }
     }
 
@@ -431,15 +444,9 @@ public partial class App : Application
             {
                 _window = null;
                 SetBackground(true);
-                // Release the UI tree, then trim the working set while running in the tray
+                // Release the UI tree and hand the freed memory back to Windows while in the tray
                 _dispatcher?.TryEnqueue(DispatcherQueuePriority.Low, () =>
-                {
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect();
-                    using var self = System.Diagnostics.Process.GetCurrentProcess();
-                    K32EmptyWorkingSet(self.Handle);
-                });
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true));
             };
         }
         _window.Activate();
@@ -454,10 +461,6 @@ public partial class App : Application
         _ = _window!.PickExcludedAppAsync(store);
     }
 
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool K32EmptyWorkingSet(nint process);
-
     /// <summary>
     /// With no window open, the app only keeps the tray icon and watches the core, so it runs
     /// in efficiency mode at low priority and stays out of the way when the PC is busy. Opening
@@ -470,45 +473,18 @@ public partial class App : Application
         {
             return;
         }
-        var state = new PowerThrottlingState
+        var state = new Native.PowerThrottlingState
         {
             Version     = 1,
-            ControlMask = PowerThrottlingExecutionSpeed,
-            StateMask   = background ? PowerThrottlingExecutionSpeed : 0,
+            ControlMask = Native.PowerThrottlingExecutionSpeed,
+            StateMask   = background ? Native.PowerThrottlingExecutionSpeed : 0,
         };
         unsafe
         {
-            SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, (uint)sizeof(PowerThrottlingState));
+            Native.SetProcessInformation(Native.GetCurrentProcess(), Native.ProcessPowerThrottling, &state, (uint)sizeof(Native.PowerThrottlingState));
         }
-        SetPriorityClass(GetCurrentProcess(), background ? BelowNormalPriorityClass : NormalPriorityClass);
+        Native.SetPriorityClass(Native.GetCurrentProcess(), background ? Native.BelowNormalPriorityClass : Native.NormalPriorityClass);
     }
-
-    private const int  ProcessPowerThrottling        = 4;
-    private const uint PowerThrottlingExecutionSpeed = 0x1;
-    private const uint NormalPriorityClass           = 0x20;
-    private const uint BelowNormalPriorityClass      = 0x4000;
-
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct PowerThrottlingState
-    {
-        public uint Version;
-        public uint ControlMask;
-        public uint StateMask;
-    }
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    private static partial nint GetCurrentProcess();
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static unsafe partial bool SetProcessInformation(nint process, int infoClass, void* info, uint size);
-
-    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool SetPriorityClass(nint process, uint priorityClass);
-
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    private static partial int GetSystemMetrics(int index);
 
     /// <summary>
     /// Called when Coffee Filter is launched again while running. Safe from any thread.
@@ -520,12 +496,6 @@ public partial class App : Application
         var link = ReadLink(args);
         _instance?._dispatcher?.TryEnqueue(() => _instance.Activate(link));
     }
-
-    /// <summary>
-    /// A coffee-filter:// link from a web page: what it asks for, and its one value.
-    /// </summary>
-    /// <param name="Action">"install" (a userscript page's Install button), "exclude" (the blocked page's Exclude button), or a notification's page ("main" or "problems").</param>
-    /// <param name="Value">The script address, or the site name.</param>
 
     /// <summary>
     /// The link that opened the app (coffee-filter://install?url=... or coffee-filter://exclude?host=...),
@@ -642,8 +612,7 @@ public partial class App : Application
     /// </summary>
     private void CreateTray()
     {
-        _tray     = (TaskbarIcon)Resources["TrayIcon"];
-        _trayMenu = new TrayMenu(ShowWindow, async () => await RunAsync(_running ? "stop" : "start"), Quit);
+        _tray = (TaskbarIcon)Resources["TrayIcon"];
 
         // Installed: one fixed ID, so the icon keeps its place on the taskbar across updates (the
         // exe is signed for this; see SignNativeExecutable). A build run from its own folder keeps
@@ -659,7 +628,7 @@ public partial class App : Application
         {
             try
             {
-                _trayMenu.Show();
+                OpenTrayMenu();
             }
             catch (Exception ex)
             {
@@ -670,10 +639,23 @@ public partial class App : Application
         };
 
         UpdateTrayIconTheme();
-        if (Last?.Status is { } s)
+    }
+
+    /// <summary>
+    /// The right-click menu is a window of its own, made on the first right-click (most sessions
+    /// never need it) and kept after that.
+    /// </summary>
+    private void OpenTrayMenu()
+    {
+        if (_trayMenu is null)
         {
-            UpdateTrayBlocking(s.Running, s.CertInstalled);
+            _trayMenu = new TrayMenu(ShowWindow, async () => await RunAsync(_running ? "stop" : "start"), Quit);
+            if (Last?.Status is { } s)
+            {
+                _trayMenu.SetBlocking(s.Running, s.CertInstalled);
+            }
         }
+        _trayMenu.Show();
     }
 
     /// <summary>
@@ -731,7 +713,7 @@ public partial class App : Application
         // background, and when the tray icon was created first, it sometimes showed no icon.
         // The size Windows draws tray icons at for this display's scaling
         const int SM_CXSMICON = 49;
-        var size   = GetSystemMetrics(SM_CXSMICON);
+        var size   = Native.GetSystemMetrics(SM_CXSMICON);
         var old    = _tray.Icon;
         _tray.Icon = new System.Drawing.Icon(file, size, size);
         old?.Dispose();

@@ -15,7 +15,8 @@
 //   caps are Leaf's quiet key chips (PowerToys' are accent-filled).
 // - Native AOT: the focused-button check reads the automation peer's class name instead of comparing CLR types; key
 //   caps are added in code instead of through an ItemsControl; no telemetry, conflict window, or right-click disable.
-// Coffee Filter changes: the keyboard hook is KeyCapture, and Win32 calls are LibraryImports instead of CsWin32.
+// Coffee Filter changes: the keyboard hook is KeyCapture, Win32 calls are LibraryImports instead of CsWin32, and the
+// dialog is made on the first click instead of with the control.
 
 using System.Runtime.InteropServices;
 using Microsoft.UI;
@@ -50,18 +51,32 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
     [ThreadStatic]
     private static bool s_isDialogOpen;
 
-    private readonly ShortcutDialogContentControl _c = new();
-    private readonly ContentDialog _shortcutDialog;
+    // Coffee Filter: made on the first click (CreateDialog), since most pickers are never opened and each dialog is a
+    // full page of controls. Everything that uses them runs only once the dialog has opened; the HotkeySettings setter
+    // checks first.
+    private ShortcutDialogContentControl _c = null!;
+    private ContentDialog _shortcutDialog = null!;
+    private bool _dialogCreated;
 
     /// <summary>Creates the picker.</summary>
     public ShortcutControl()
     {
         InitializeComponent();
         _internalSettings = new HotkeySettings();
+        Unloaded += ShortcutControl_Unloaded;
+    }
 
+    private void CreateDialog()
+    {
+        if (_dialogCreated)
+        {
+            return;
+        }
+
+        _dialogCreated = true;
+        _c = new ShortcutDialogContentControl();
         _c.ResetClick += C_ResetClick;
         _c.ClearClick += C_ClearClick;
-        Unloaded += ShortcutControl_Unloaded;
 
         // We create the Dialog in C# because doing it in XAML is giving WinUI/XAML Island bugs when using dark theme.
         _shortcutDialog = new ContentDialog
@@ -95,7 +110,10 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
             {
                 _hotkeySettings = value;
                 SetKeys();
-                _c.Keys = HotkeySettings?.GetKeysList();
+                if (_dialogCreated)
+                {
+                    _c.Keys = HotkeySettings?.GetKeysList();
+                }
             }
         }
     }
@@ -476,6 +494,7 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
         _hookFailed = false;
         try
         {
+            CreateDialog();
             List<object> newKeys = HotkeySettings?.GetKeysList() ?? [];
 
             if (_c.Keys == null || !_c.JudgeIfKeyValueSame(newKeys))

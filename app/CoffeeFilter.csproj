@@ -6,7 +6,6 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
         <RootNamespace>CoffeeFilter</RootNamespace>
-        <Version>0.1.10.0</Version>
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <Platforms>x64</Platforms>
         <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -18,6 +17,21 @@
         <ApplicationIcon>Assets\coffee.ico</ApplicationIcon>
     </PropertyGroup>
 
+    <!-- Version: read from Package.appxmanifest's Identity Version, the one place it's set -->
+    <PropertyGroup>
+        <ManifestText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)Package.appxmanifest'))</ManifestText>
+        <Version>$([System.Text.RegularExpressions.Regex]::Replace($(ManifestText), '(?s)^.*?&lt;Identity\s[^&gt;]*?\sVersion="([^"]+)".*$', '$1'))</Version>
+    </PropertyGroup>
+
+    <!-- File Details (what Explorer and Task Manager show; the core sets the same in core\build.rs) -->
+    <PropertyGroup>
+        <AssemblyTitle>Coffee Filter</AssemblyTitle>
+        <Description>Coffee Filter</Description>
+        <Product>Coffee Filter</Product>
+        <Company>Devin Green (Artistro08)</Company>
+        <Copyright>Copyright (c) 2026 Devin Green (Artistro08)</Copyright>
+    </PropertyGroup>
+
     <!-- Performance: Native AOT (no JIT, fast start, low memory), trimmed, lean runtime -->
     <PropertyGroup>
         <PublishAot>true</PublishAot>
@@ -25,7 +39,6 @@
         <OptimizationPreference>Size</OptimizationPreference>
         <InvariantGlobalization>true</InvariantGlobalization>
         <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
-        <TieredPGO>false</TieredPGO>
         <EventSourceSupport>false</EventSourceSupport>
         <DebuggerSupport Condition="'$(Configuration)' == 'Release'">false</DebuggerSupport>
         <!-- Error messages and stack traces stay on, so app-errors.log is useful -->
@@ -42,12 +55,18 @@
         <GenerateTestArtifacts>false</GenerateTestArtifacts>
     </PropertyGroup>
 
+    <!-- Signing: the same signtool call for both exes, timestamped so the signature outlives the
+         certificate. SignAppxPackageExeFullPath is signtool from Microsoft.Windows.SDK.BuildTools. -->
+    <PropertyGroup>
+        <SignExeArguments>sign /q /fd SHA256 /sha1 $(PackageCertificateThumbprint) /tr http://timestamp.digicert.com /td SHA256</SignExeArguments>
+    </PropertyGroup>
+
     <!-- Sign CoffeeFilter.exe Itself (not only the package). Each update installs to a new folder, and
          Windows only keeps the tray icon where you put it when the icon's ID stays the same and both
          exes are signed by the same publisher (App.TrayIconId). From MagicBuds' SignAppExecutable,
          after the Native AOT link instead of the app host. -->
     <Target Name="SignNativeExecutable" AfterTargets="LinkNative" Condition="'$(PackageCertificateThumbprint)' != '' And Exists('$(NativeBinary)')">
-        <Exec Command="&quot;$(SignAppxPackageExeFullPath)&quot; sign /q /fd SHA256 /sha1 $(PackageCertificateThumbprint) &quot;$(NativeBinary)&quot;" />
+        <Exec Command="&quot;$(SignAppxPackageExeFullPath)&quot; $(SignExeArguments) &quot;$(NativeBinary)&quot;" />
     </Target>
 
     <!-- Icon Source Art (kept in the repo, not shipped) -->
@@ -56,7 +75,7 @@
         <None Remove="Assets\source\**" />
     </ItemGroup>
 
-    <!-- Packages -->
+    <!-- Packages (SDK.BuildTools pins a newer Windows SDK, and its signtool, than WindowsAppSDK brings) -->
     <ItemGroup>
         <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
         <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
@@ -72,11 +91,33 @@
         <Content Include="Assets\tray-black.ico" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
-    <!-- Rust Core, built first with cargo build in release mode -->
+    <!-- Rust Core: cargo's build (core\target\release) is copied to obj and bundled from there, so
+         signing never touches cargo's own output -->
+    <PropertyGroup>
+        <CoreExe>$(MSBuildThisFileDirectory)..\core\target\release\coffee-filter-core.exe</CoreExe>
+        <BundledCoreExe>$(MSBuildThisFileDirectory)$(BaseIntermediateOutputPath)$(Configuration)\core\coffee-filter-core.exe</BundledCoreExe>
+    </PropertyGroup>
     <ItemGroup>
-        <None Include="..\core\target\release\coffee-filter-core.exe"
+        <CoreSource Include="..\core\src\**\*;..\core\build.rs;..\core\Cargo.toml;..\core\Cargo.lock" />
+        <None Include="$(BundledCoreExe)"
               Link="coffee-filter-core.exe"
               CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
+
+    <!-- Release Only: refuse to bundle a core older than its source (run scripts\build.ps1, or cargo
+         build in release mode). Runs only when the exe is missing or a source file is newer. -->
+    <Target Name="CheckCoreIsBuilt" BeforeTargets="PrepareForBuild" Condition="'$(Configuration)' == 'Release'" Inputs="@(CoreSource)" Outputs="$(CoreExe)">
+        <Error Text="core\target\release\coffee-filter-core.exe is missing or older than core\src; run scripts\build.ps1 (or cargo build in core, release mode) first." />
+    </Target>
+
+    <!-- Copy the core to obj, and in Release sign the copy like CoffeeFilter.exe -->
+    <Target Name="BundleCore" BeforeTargets="PrepareForBuild" Inputs="$(CoreExe)" Outputs="$(BundledCoreExe)" Condition="Exists('$(CoreExe)')">
+        <Copy SourceFiles="$(CoreExe)" DestinationFiles="$(BundledCoreExe)" />
+        <CallTarget Targets="SignBundledCore" Condition="'$(Configuration)' == 'Release' And '$(PackageCertificateThumbprint)' != ''" />
+        <Touch Files="$(BundledCoreExe)" />
+    </Target>
+    <Target Name="SignBundledCore">
+        <Exec Command="&quot;$(SignAppxPackageExeFullPath)&quot; $(SignExeArguments) &quot;$(BundledCoreExe)&quot;" />
+    </Target>
 
 </Project>

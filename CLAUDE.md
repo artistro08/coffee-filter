@@ -14,9 +14,13 @@ The core restores the user's proxy settings on stop, crash, logoff, and shutdown
 ### Layout
 
 - `core/src/main.rs` — command loop (`Command` enum, JSON-lines), start/stop, shutdown, status reply
-- `core/src/filter.rs` — `Shared` state, list downloads and engine build, the request handler (`Blocker`), DNS-rebinding defenses, live log, t.co resolver, blocked page, built-in rules
+- `core/src/filter.rs` — `Shared` state, the request handler (`Blocker`), blocked page, t.co resolver, the generic-rules address
+- `core/src/lists.rs` — list downloads (straight to disk), cache, engine build and saved engine (`engine.dat`, plus `engine.prune` for `$jsonprune` lines)
+- `core/src/prune.rs` — AdGuard `$jsonprune` (adblock-rust drops it): rule parser, JSONPath subset, pruning matching JSON responses (X promoted posts, YouTube ad slots)
+- `core/src/net.rs` — DNS-rebinding defenses (`PublicOnly`, private hosts/IPs), `on_domain_list`
+- `core/src/log.rs` — live log (`Log`) and detailed log (`Trace`, debug.log)
 - `core/src/ca.rs` — per-PC CA (DPAPI key), elevated certutil install/remove, site certificates
-- `core/src/cosmetic.rs` — page injection, CSP nonces, AdGuard syntax, scriptlet library (SHA-256 pinned)
+- `core/src/cosmetic.rs`, `generic.js` — page injection, CSP nonces (and `connect-src` for the generic-rules address), AdGuard syntax, scriptlet library (SHA-256 pinned), generic class/id hiding
 - `core/src/userscripts.rs`, `userscripts.js` — Tampermonkey-style scripts and the install page
 - `core/src/apps.rs` — excluded apps: which program owns a connection (TCP table)
 - `core/src/sysproxy.rs` — PAC script, `SYSTEM_HOSTS` (Windows Update/Store, always direct), proxy backup and restore
@@ -56,7 +60,7 @@ For a quick compile check of the app only: `dotnet build -c Debug` in `app/`.
 scripts\install.ps1
 ```
 
-**Windows refuses to install changed content under the same version.** Before every build you intend to install, bump the **fourth** number in both `app\CoffeeFilter.csproj` (`<Version>`) and `app\Package.appxmanifest` (`Identity Version`), e.g. `0.1.1.0` → `0.1.1.1`. Installing force-closes the running app.
+**Windows refuses to install changed content under the same version.** Before every build you intend to install, bump the **fourth** number in `app\Package.appxmanifest` (`Identity Version`; the csproj reads its version from there), e.g. `0.1.1.0` → `0.1.1.1`. Installing force-closes the running app.
 
 ### Test
 
@@ -96,7 +100,7 @@ Only when the owner says so. Never comment on, review, or change the status of P
 
 Only when the owner asks for a release, with the version they name, and only through the Release Gate above.
 
-1. Set the version (three numbers) in `app\CoffeeFilter.csproj`, `app\Package.appxmanifest` (fourth number `0`), and `core\Cargo.toml`.
+1. Set the version (three numbers) in `app\Package.appxmanifest` (fourth number `0`) and `core\Cargo.toml`.
 2. `scripts\build.ps1`, then `scripts\install.ps1`.
 3. Commit and push to `main` (the owner asking for a release is the go-ahead for this).
 4. Write release notes (what changed, install steps, link to the README).

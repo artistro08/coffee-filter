@@ -244,6 +244,42 @@ public sealed class CoreClientTests : IDisposable
     }
 
     [Fact]
+    public async Task DisposeAsyncStopsTheCore()
+    {
+        await _core.WaitReadyAsync();
+        var exited = new TaskCompletionSource();
+        _core.Exited += () => exited.TrySetResult();
+
+        await _core.DisposeAsync();
+
+        Assert.Same(exited.Task, await Task.WhenAny(exited.Task, Task.Delay(10_000)));
+    }
+
+    [Fact]
+    public async Task BriefStatusLeavesOutTheListsAndKeepsTheRest()
+    {
+        await _core.WaitReadyAsync();
+        await _core.SendAsync("set_exclusions", new JsonObject { ["hosts"] = new JsonArray("bank.com") });
+
+        // The window's 2-second check: counters and on/off state, without the big lists
+        var brief = await _core.SendAsync("status", new JsonObject { ["brief"] = true });
+        Assert.True(brief.Ok, brief.Error);
+        Assert.Equal(2, brief.Status!.Rules);
+        Assert.False(brief.Status.Running);
+        Assert.False(brief.Status.CertInstalled);
+        Assert.NotNull(brief.Status.Problems);
+        Assert.Empty(brief.Status.Lists);
+        Assert.Empty(brief.Status.Exclusions);
+
+        // A plain status still sends everything, and the app carries it over to brief replies
+        var full = await _core.SendAsync("status");
+        Assert.Equal("Test", Assert.Single(full.Status!.Lists).Name);
+        brief.Status.KeepListsFrom(full.Status);
+        Assert.Equal("Test", Assert.Single(brief.Status.Lists).Name);
+        Assert.Equal(["bank.com"], brief.Status.Exclusions);
+    }
+
+    [Fact]
     public async Task UnknownCommandKeepsCoreAlive()
     {
         await _core.WaitReadyAsync();
