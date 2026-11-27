@@ -168,16 +168,7 @@ public sealed partial class MainWindow
         panel.Children.Add(name);
         panel.Children.Add(url);
 
-        var dialog = new ContentDialog
-        {
-            XamlRoot          = Content.XamlRoot,
-            Title             = "Add a filter list",
-            Content           = panel,
-            PrimaryButtonText = "Add",
-            CloseButtonText   = "Cancel",
-            DefaultButton     = ContentDialogButton.Primary,
-        };
-
+        var dialog = Dialog("Add a filter list", panel, "Add");
         if (await Dialogs.ShowAsync(dialog) == ContentDialogResult.Primary)
         {
             Expanded.Add("custom");
@@ -222,15 +213,7 @@ public sealed partial class MainWindow
         await ShowInFrontAsync();
 
         var url = new TextBox { Header = "Web address of the .user.js file", PlaceholderText = "https://greasyfork.org/scripts/…/script.user.js", Text = address, MinWidth = 400 };
-        var dialog = new ContentDialog
-        {
-            XamlRoot          = Content.XamlRoot,
-            Title             = "Add a userscript",
-            Content           = url,
-            PrimaryButtonText = "Add",
-            CloseButtonText   = "Cancel",
-            DefaultButton     = ContentDialogButton.Primary,
-        };
+        var dialog = Dialog("Add a userscript", url, "Add");
         if (fromLink)
         {
             HoldPrimary(dialog);

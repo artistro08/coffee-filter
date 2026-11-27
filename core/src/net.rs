@@ -2,6 +2,10 @@
 //! site name to this PC or the home network (DNS rebinding).
 
 use crate::sysproxy;
+use hudsucker::{
+    Body,
+    hyper::{Response, StatusCode},
+};
 use hyper_util::client::legacy::connect::dns::{GaiResolver, Name};
 use std::{
     future::Future,
@@ -22,6 +26,48 @@ pub fn on_domain_list<S: AsRef<str>>(list: &[S], host: &str) -> bool {
             && host[host.len() - site.len()..].eq_ignore_ascii_case(site)
             && (host.len() == site.len() || host[host.len() - site.len() - 1] == b'.')
     })
+}
+
+/// The host of `host:port` or a full address, without copying it (IPv6 without its brackets).
+pub fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let auth = auth.rsplit_once('@').map_or(auth, |(_, host)| host);
+    if let Some(v6) = auth.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or(v6);
+    }
+    auth.split(':').next().unwrap_or(auth)
+}
+
+/// Match a whole text against a pattern where `*` is any run of characters and everything
+/// else is itself. On a mismatch it goes back to the last `*` and lets it take one more
+/// character, so it never backtracks further than that.
+pub fn glob(pattern: &str, text: &str, ignore_case: bool) -> bool {
+    let (p, t) = (pattern.as_bytes(), text.as_bytes());
+    let same   = |a: u8, b: u8| if ignore_case { a.eq_ignore_ascii_case(&b) } else { a == b };
+    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            star = Some(pi);
+            mark = ti;
+            pi  += 1;
+        } else if pi < p.len() && same(p[pi], t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if let Some(s) = star {
+            pi    = s + 1;
+            mark += 1;
+            ti    = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == b'*')
+}
+
+/// The empty 502 the browser gets when a site's response can't be read.
+pub fn bad_gateway() -> Response<Body> {
+    Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::empty()).expect("static response")
 }
 
 /// This PC and home-network devices (routers, docks, NAS, smart home, Tailscale). Their
@@ -108,6 +154,23 @@ mod tests {
             Err(e) => eprintln!("skipped, DNS unavailable: {e}"),
             Ok(addrs) => panic!("resolved to {:?}", addrs.collect::<Vec<_>>()),
         }
+    }
+
+    #[test]
+    fn host_parsing() {
+        assert_eq!(host_of("api.example.com:443"), "api.example.com");
+        assert_eq!(host_of("https://user@X.com:8443/path?q"), "X.com");
+        assert_eq!(host_of("[::1]:443"), "::1");
+    }
+
+    #[test]
+    fn glob_wildcards() {
+        assert!(glob("*", "", false));
+        assert!(glob("https://*.com/*", "https://a.com/b", false));
+        assert!(glob("a*b*c", "aXXbYYc", false));
+        assert!(!glob("a*b*c", "aXXbYY", false));
+        assert!(!glob("abc", "abcd", false));
+        assert!(!glob("abc", "ABC", false) && glob("abc", "ABC", true));
     }
 
     #[test]

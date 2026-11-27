@@ -316,39 +316,18 @@ pub fn install() -> io::Result<bool> {
     is_installed()
 }
 
-/// Early builds installed into the user's own Root store. Checked in the registry
-/// (that store's backing key), because asking CryptoAPI would also see machine roots.
-fn in_user_store() -> io::Result<bool> {
-    let thumb = thumbprint_hex()?.to_uppercase();
-    Ok(winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .open_subkey(format!(r"Software\Microsoft\SystemCertificates\Root\Certificates\{thumb}"))
-        .is_ok())
-}
-
-/// Remove the cert from both trust stores and delete the CA files, so the key is gone for good.
-///
-/// Both deletions run in one elevated step (one UAC prompt). Windows also asks to confirm
-/// removing a root from the user store; started from the approved UAC prompt, that dialog
-/// is allowed to the front instead of opening hidden behind other windows.
+/// Remove the cert from the machine Root store (one UAC prompt, time-limited like every
+/// elevated step) and delete the CA files, so the key is gone for good.
 pub fn uninstall() -> io::Result<bool> {
     if !cert_path()?.exists() {
         return Ok(true);
     }
     ensure_ours(false)?;
-    let thumb   = thumbprint_hex()?;
-    let machine = is_installed()?;
-    let user    = in_user_store()?;
-    // `thumb` is hex only, so it's safe inside the command line
-    let steps = match (machine, user) {
-        (true, true) => Some(format!("/d /c certutil.exe -delstore Root {thumb} & certutil.exe -user -delstore Root {thumb}")),
-        (true, false) => Some(format!("/d /c certutil.exe -delstore Root {thumb}")),
-        (false, true) => Some(format!("/d /c certutil.exe -user -delstore Root {thumb}")),
-        (false, false) => None,
-    };
-    if let Some(steps) = steps {
-        run_elevated("cmd.exe", &steps)?;
+    if is_installed()? {
+        // The thumbprint is hex only, so it's safe inside the command line
+        run_elevated("certutil.exe", &format!("-delstore Root {}", thumbprint_hex()?))?;
     }
-    if is_installed()? || in_user_store()? {
+    if is_installed()? {
         return Ok(false);
     }
     let _ = fs::remove_file(key_path()?);

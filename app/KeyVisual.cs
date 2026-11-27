@@ -6,7 +6,8 @@
 // (https://github.com/microsoft/PowerToys), by way of Leaf Calendar and MagicBuds, whose changes are kept (Native AOT: nothing from the
 // template is read back through a typed cast): the presenter's style and content are this control's PresenterStyle and
 // PresenterContent, which the template binds, instead of being set on the template part; Update also runs when Content
-// changes.
+// changes. Coffee Filter: keys always draw as glyphs where they have one, and only the codes HotkeySettings.GetKeysList
+// sends are handled.
 
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -14,7 +15,7 @@ using Windows.System;
 
 namespace CoffeeFilter;
 
-/// <summary>One key of a shortcut drawn as a key cap (PowerToys' KeyVisual): text, or a glyph for Win, Shift, Enter, Backspace, and the arrows.</summary>
+/// <summary>One key of a shortcut drawn as a key cap (PowerToys' KeyVisual): text, a glyph for Shift and the arrows, or the Windows logo.</summary>
 [TemplateVisualState(Name = NormalState, GroupName = "CommonStates")]
 [TemplateVisualState(Name = DisabledState, GroupName = "CommonStates")]
 [TemplateVisualState(Name = InvalidState, GroupName = "CommonStates")]
@@ -26,7 +27,7 @@ public sealed partial class KeyVisual : Control
     private const string InvalidState = "Invalid";
     private const string WarningState = "Warning";
 
-    /// <summary>The key: its name as text, or a virtual-key code (92 is Win, 16 is Shift).</summary>
+    /// <summary>The key: its name as text, or a virtual-key code (92 is Win, 16 is Shift, 37–40 the arrows).</summary>
     public object Content
     {
         get => (object)GetValue(ContentProperty);
@@ -45,16 +46,6 @@ public sealed partial class KeyVisual : Control
 
     /// <summary>Identifies <see cref="State"/>.</summary>
     public static readonly DependencyProperty StateProperty = DependencyProperty.Register(nameof(State), typeof(KeyVisualState), typeof(KeyVisual), new PropertyMetadata(KeyVisualState.Normal, OnStateChanged));
-
-    /// <summary>Draws Shift, Enter, Backspace, and the arrows as glyphs instead of names.</summary>
-    public bool RenderKeyAsGlyph
-    {
-        get => (bool)GetValue(RenderKeyAsGlyphProperty);
-        set => SetValue(RenderKeyAsGlyphProperty, value);
-    }
-
-    /// <summary>Identifies <see cref="RenderKeyAsGlyph"/>.</summary>
-    public static readonly DependencyProperty RenderKeyAsGlyphProperty = DependencyProperty.Register(nameof(RenderKeyAsGlyph), typeof(bool), typeof(KeyVisual), new PropertyMetadata(false, OnContentChanged));
 
     /// <summary>The presenter's style (text, glyph, or the Windows logo), for the template.</summary>
     public Style PresenterStyle
@@ -124,6 +115,7 @@ public sealed partial class KeyVisual : Control
         }
     }
 
+    // Text keys (Ctrl, Alt, letters, Enter, ...) as their name; Shift and the arrows as Segoe Fluent glyphs; Win as the logo
     private void Update()
     {
         if (Content == null)
@@ -134,68 +126,34 @@ public sealed partial class KeyVisual : Control
         if (Content is string key)
         {
             PresenterContent = key;
-            switch (key)
-            {
-                case nameof(VirtualKey.Up):
-                    SetGlyphOrText("", VirtualKey.Up);
-                    break;
-
-                case nameof(VirtualKey.Down):
-                    SetGlyphOrText("", VirtualKey.Down);
-                    break;
-
-                case nameof(VirtualKey.Left):
-                    SetGlyphOrText("", VirtualKey.Left);
-                    break;
-
-                case nameof(VirtualKey.Right):
-                    SetGlyphOrText("", VirtualKey.Right);
-                    break;
-
-                default:
-                    PresenterStyle = Resource("DefaultKeyCharPresenterStyle");
-                    break;
-            }
-
+            PresenterStyle = Resource("DefaultKeyCharPresenterStyle");
             return;
         }
 
         if (Content is int keyCode)
         {
-            VirtualKey virtualKey = (VirtualKey)keyCode;
-            switch (virtualKey)
+            switch ((VirtualKey)keyCode)
             {
-                case VirtualKey.Enter:
-                    SetGlyphOrText("", virtualKey);
-                    break;
-
-                case VirtualKey.Back:
-                    SetGlyphOrText("", virtualKey);
-                    break;
-
                 case VirtualKey.Shift:
-                case (VirtualKey)160: // Left Shift
-                case (VirtualKey)161: // Right Shift
-                    SetGlyphOrText("", virtualKey);
+                    SetGlyph("");
                     break;
 
                 case VirtualKey.Up:
-                    SetGlyphOrText("", virtualKey);
+                    SetGlyph("");
                     break;
 
                 case VirtualKey.Down:
-                    SetGlyphOrText("", virtualKey);
+                    SetGlyph("");
                     break;
 
                 case VirtualKey.Left:
-                    SetGlyphOrText("", virtualKey);
+                    SetGlyph("");
                     break;
 
                 case VirtualKey.Right:
-                    SetGlyphOrText("", virtualKey);
+                    SetGlyph("");
                     break;
 
-                case VirtualKey.LeftWindows:
                 case VirtualKey.RightWindows:
                     PresenterStyle = Resource("WindowsKeyCharPresenterStyle");
                     break;
@@ -203,18 +161,10 @@ public sealed partial class KeyVisual : Control
         }
     }
 
-    private void SetGlyphOrText(string glyph, VirtualKey key)
+    private void SetGlyph(string glyph)
     {
-        if (RenderKeyAsGlyph)
-        {
-            PresenterContent = glyph;
-            PresenterStyle = Resource("GlyphKeyCharPresenterStyle");
-        }
-        else
-        {
-            PresenterContent = key.ToString();
-            PresenterStyle = Resource("DefaultKeyCharPresenterStyle");
-        }
+        PresenterContent = glyph;
+        PresenterStyle = Resource("GlyphKeyCharPresenterStyle");
     }
 
     private static Style Resource(string key) => (Style)Application.Current.Resources[key];

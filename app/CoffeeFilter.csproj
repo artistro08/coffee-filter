@@ -113,11 +113,8 @@
     <!-- Copy the core to obj, and in Release sign the copy like CoffeeFilter.exe -->
     <Target Name="BundleCore" BeforeTargets="PrepareForBuild" Inputs="$(CoreExe)" Outputs="$(BundledCoreExe)" Condition="Exists('$(CoreExe)')">
         <Copy SourceFiles="$(CoreExe)" DestinationFiles="$(BundledCoreExe)" />
-        <CallTarget Targets="SignBundledCore" Condition="'$(Configuration)' == 'Release' And '$(PackageCertificateThumbprint)' != ''" />
+        <Exec Command="&quot;$(SignAppxPackageExeFullPath)&quot; $(SignExeArguments) &quot;$(BundledCoreExe)&quot;" Condition="'$(Configuration)' == 'Release' And '$(PackageCertificateThumbprint)' != ''" />
         <Touch Files="$(BundledCoreExe)" />
-    </Target>
-    <Target Name="SignBundledCore">
-        <Exec Command="&quot;$(SignAppxPackageExeFullPath)&quot; $(SignExeArguments) &quot;$(BundledCoreExe)&quot;" />
     </Target>
 
 </Project>

@@ -296,12 +296,12 @@ public sealed class CoreClient : IDisposable
     /// Stop the core like <see cref="Dispose()"/>, but wait for it without blocking the calling
     /// thread, so the window stays responsive while the core exits.
     /// </summary>
-    public async Task DisposeAsync(int waitMs = 5000)
+    public async Task DisposeAsync()
     {
         try
         {
             _process.StandardInput.Close();
-            using var wait = new CancellationTokenSource(waitMs);
+            using var wait = new CancellationTokenSource(5000);
             await _process.WaitForExitAsync(wait.Token);
         }
         catch (OperationCanceledException)

@@ -262,12 +262,6 @@ fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str, endp
     Some(Bytes::from(tags))
 }
 
-fn new_nonce() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("OS random number generator");
-    crate::config::hex(&bytes)
-}
-
 /// Whether hudsucker can decompress a body sent with these headers (every encoding browsers ask for).
 pub fn decodable(headers: &hudsucker::hyper::HeaderMap) -> bool {
     headers.get_all(CONTENT_ENCODING).iter().all(|v| {
@@ -282,7 +276,7 @@ pub struct Page<'a> {
     /// a whole page (see `inject_after_head`).
     pub navigation: bool,
     /// Same-site path the page script asks for generic rules on (see `new_generic_path`).
-    pub endpoint:   Option<&'a str>,
+    pub endpoint:   &'a str,
 }
 
 /// Add cosmetic filtering to an HTML page response. Anything that isn't a plain,
@@ -307,23 +301,21 @@ pub fn inject<'a>(res: Response<Body>, engine: &Engine, userscripts: impl FnOnce
         return res;
     }
 
-    let nonce = new_nonce();
-    let Some(tags) = page_tags(engine, &userscripts(), url, &nonce, page.endpoint) else {
+    let nonce = crate::config::random_hex(16);
+    let Some(tags) = page_tags(engine, &userscripts(), url, &nonce, Some(page.endpoint)) else {
         trace.write(format_args!("page {shown} not filtered: no rules or userscripts for it"));
         return res;
     };
     trace.write(format_args!("page {shown} filtered ({} bytes of rules and scripts added)", tags.len()));
 
     // Encodings were checked above, so decoding only fails on a broken upstream body
-    let Ok(res) = decode_response(res) else {
-        return Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::empty()).expect("static response");
-    };
+    let Ok(res) = decode_response(res) else { return crate::net::bad_gateway() };
     let (mut parts, body) = res.into_parts();
 
     // A policy we can't read or rewrite is kept exactly as sent; dropping it would remove the
     // site's protection. Report-only policies get the nonce too, so the site isn't sent reports
     // that name our tags.
-    let connect = page.endpoint.and_then(|path| endpoint_source(url, path));
+    let connect = endpoint_source(url, page.endpoint);
     for name in [CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY_REPORT_ONLY] {
         let policies: Vec<HeaderValue> = parts
             .headers
@@ -360,9 +352,7 @@ const MAX_NAME_LEN: usize = 256;
 /// A fresh path for one proxy run that the page script asks for generic rules on. Starting
 /// with `/.coffee-filter-` and random, so it can't be a real page on any site.
 pub fn new_generic_path() -> String {
-    let mut bytes = [0u8; 12];
-    getrandom::fill(&mut bytes).expect("OS random number generator");
-    format!("/.coffee-filter-{}/generic", crate::config::hex(&bytes))
+    format!("/.coffee-filter-{}/generic", crate::config::random_hex(12))
 }
 
 /// What the page script sends: its address and the class names and ids it has seen.
@@ -646,9 +636,9 @@ mod tests {
         assert_eq!(html, Bytes::from(page_text));
     }
 
-    /// A page load of `url`, with no generic rules.
+    /// A page load of `url`.
     fn page(url: &str) -> Page<'_> {
-        Page { url, navigation: true, endpoint: None }
+        Page { url, navigation: true, endpoint: "/.coffee-filter-test/generic" }
     }
 
     #[test]

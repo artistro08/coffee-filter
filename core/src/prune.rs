@@ -5,19 +5,23 @@
 //! of the list text while lists compile and keeps them next to the saved engine
 //! (`engine.prune`). A rule is applied exactly as written or not at all: an address pattern,
 //! modifier, or part of a path this file can't evaluate drops the whole rule (listed in the
-//! detailed log), so nothing is ever pruned more broadly than the list asked for.
+//! detailed log), so nothing is ever pruned more broadly than the list asked for. Exceptions
+//! go the other way: one with `^`, `|`, `~site`, or `$match-case` is read more widely than
+//! written, which can only turn off more pruning, never less.
 //!
-//! Paths are the JSONPath subset AdGuard documents: `$`, `.key`, `['key']`, `[a, b]`, `*`,
-//! `..` (any depth), and the filters `[?(has k)]`, `[?(key-eq k v)]`, `[?(key-substr k v)]`,
-//! where `k` is a key or a nested path (`"$.a.b"`). `[?(@.a.b)]` (standard JSONPath, used by
-//! Zen's lists) means the same as `[?(has "$.a.b")]`. A filter tests the children of the
-//! node before it, and the children that pass are removed.
+//! Only the syntax the lists actually use is supported. Addresses: `||site`, `*`, and plain
+//! text. Modifiers: `$domain=a.com|b.com`, `$xmlhttprequest`, `$all`. Paths: `$`, `.key`,
+//! `['key']`, `[a, b]`, `.*`, `..` (any depth), and the filters `[?(has k)]`,
+//! `[?(key-eq k true)]` (a bare JSON value), `[?(key-substr k 'text')]`, where `k` is a key or
+//! a nested path (`"$.a.b"`). `[?(@.a.b)]` (standard JSONPath, used by Zen's lists) means the
+//! same as `[?(has "$.a.b")]`. A filter tests the children of the node before it, and the
+//! children that pass are removed.
 //!
 //! <https://adguard.com/kb/general/ad-filtering/create-own-filters/#jsonprune-modifier>
 
 use crate::{
     log::{Trace, without_query},
-    net::on_domain_list,
+    net::{bad_gateway, glob, host_of, on_domain_list},
 };
 use hudsucker::{
     Body, decode_response,
@@ -148,14 +152,6 @@ impl Matched {
     }
 }
 
-/// The host of an address, without copying it.
-fn host_of(url: &str) -> &str {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let auth = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    let auth = auth.rsplit_once('@').map_or(auth, |(_, host)| host);
-    auth.split(':').next().unwrap_or(auth)
-}
-
 /// Undo the list escapes: `\$` and `\,` (needed because `$` and `,` separate modifiers).
 fn unescape(value: &str) -> String {
     value.replace("\\$", "$").replace("\\,", ",")
@@ -199,7 +195,6 @@ fn parse_line(line: &str) -> Result<Option<Line>, String> {
     let mut prune      = false;
     let mut domains    = Domains::default();
     let mut xhr_only   = false;
-    let mut match_case = false;
     for option in split_unescaped(options, ',') {
         let (name, value) = option.split_once('=').map_or((option.trim(), None), |(n, v)| (n.trim(), Some(v)));
         match name {
@@ -207,11 +202,12 @@ fn parse_line(line: &str) -> Result<Option<Line>, String> {
                 prune      = true;
                 expression = value.map(unescape);
             }
-            "domain" => domains = Domains::parse(value.unwrap_or(""))?,
-            "xmlhttprequest" | "xhr" => xhr_only = true,
+            "domain" => domains = Domains::parse(value.unwrap_or(""), exception)?,
+            "xmlhttprequest" => xhr_only = true,
             // Every request type: no limit to apply
             "all" => {}
-            "match-case" => match_case = true,
+            // Matching in any letter case is wider, so an exception may ignore it
+            "match-case" if exception => {}
             other => return Err(format!("the ${other} modifier isn't supported with $jsonprune")),
         }
     }
@@ -219,7 +215,7 @@ fn parse_line(line: &str) -> Result<Option<Line>, String> {
         return Ok(None);
     }
 
-    let when = When { pattern: Pattern::parse(pattern, match_case)?, domains, xhr_only };
+    let when = When { pattern: Pattern::parse(pattern, exception)?, domains, xhr_only };
     if exception {
         return Ok(Some(Line::Exception(Exception { when, expression })));
     }
@@ -235,105 +231,71 @@ fn parse_line(line: &str) -> Result<Option<Line>, String> {
 // ADDRESSES AND SITES
 // =========================================================================
 
-/// An Adblock Plus address pattern: `||` (the site or a subdomain), `|` (start or end of the
-/// address), `*` (anything), `^` (a separator or the end); everything else is itself. Letter
-/// case is ignored unless the rule says `$match-case`.
+/// An Adblock Plus address pattern: `||` (the site or a subdomain) and `*` (anything);
+/// everything else is itself, in any letter case. For an exception (`wide`), `^` is read as
+/// `*` and `|` anchors are left off; a rule using them is dropped.
 struct Pattern {
     /// With the implied `*` at either end written out.
-    glob:       Vec<u8>,
+    glob: String,
     /// `||`: the glob is tried from the start of the host and after each `.` in it.
-    host:       bool,
-    match_case: bool,
+    host: bool,
 }
 
 impl Pattern {
-    fn parse(pattern: &str, match_case: bool) -> Result<Self, String> {
+    fn parse(pattern: &str, wide: bool) -> Result<Self, String> {
         if pattern.len() > 1 && pattern.starts_with('/') && pattern.ends_with('/') {
             return Err("regular expression addresses aren't supported".into());
         }
-        let (host, rest)  = pattern.strip_prefix("||").map_or((false, pattern), |rest| (true, rest));
-        let (start, rest) = if host { (true, rest) } else { rest.strip_prefix('|').map_or((false, rest), |rest| (true, rest)) };
-        let (end, rest)   = rest.strip_suffix('|').map_or((false, rest), |rest| (true, rest));
-
-        let mut glob = Vec::with_capacity(rest.len() + 2);
-        if !start {
-            glob.push(b'*');
-        }
-        glob.extend_from_slice(rest.as_bytes());
-        if !end {
-            glob.push(b'*');
-        }
-        Ok(Self { glob, host, match_case })
+        let (host, rest) = pattern.strip_prefix("||").map_or((false, pattern), |rest| (true, rest));
+        let rest = if wide {
+            rest.trim_matches('|').replace('^', "*")
+        } else if rest.contains(['|', '^']) {
+            return Err("| and ^ in addresses aren't supported".into());
+        } else {
+            rest.to_string()
+        };
+        Ok(Self { glob: format!("{}{rest}*", if host { "" } else { "*" }), host })
     }
 
     fn matches(&self, url: &str) -> bool {
-        let url = url.as_bytes();
         if !self.host {
-            return glob(&self.glob, url, self.match_case);
+            return glob(&self.glob, url, true);
         }
         // Where a site name can begin: the host's start, and right after each of its dots
-        let Some(start) = url.windows(3).position(|w| w == b"://").map(|at| at + 3) else { return false };
-        let end = url[start..].iter().position(|b| matches!(b, b'/' | b'?' | b'#' | b':')).map_or(url.len(), |at| start + at);
+        let Some(start) = url.find("://").map(|at| at + 3) else { return false };
+        let end = url[start..].find(['/', '?', '#', ':']).map_or(url.len(), |at| start + at);
         std::iter::once(start)
-            .chain((start..end).filter(|&at| url[at] == b'.').map(|at| at + 1))
-            .any(|at| glob(&self.glob, &url[at..], self.match_case))
+            .chain(url[start..end].match_indices('.').map(|(at, _)| start + at + 1))
+            .any(|at| glob(&self.glob, &url[at..], true))
     }
 }
 
-/// A character `^` stands for: anything but a letter, a digit, or `_ - . %`.
-fn is_separator(b: u8) -> bool {
-    !(b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'%'))
-}
-
-/// Match a whole address against a glob with `*` and `^`. On a mismatch it goes back to the
-/// last `*` and lets it take one more character, so it never backtracks further than that.
-fn glob(pattern: &[u8], text: &[u8], match_case: bool) -> bool {
-    let same = |p: u8, t: u8| if match_case { p == t } else { p.eq_ignore_ascii_case(&t) };
-    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
-    while ti < text.len() {
-        if pi < pattern.len() && pattern[pi] == b'*' {
-            star = Some(pi);
-            mark = ti;
-            pi  += 1;
-        } else if pi < pattern.len() && (same(pattern[pi], text[ti]) || (pattern[pi] == b'^' && is_separator(text[ti]))) {
-            pi += 1;
-            ti += 1;
-        } else if let Some(s) = star {
-            pi    = s + 1;
-            mark += 1;
-            ti    = mark;
-        } else {
-            return false;
-        }
-    }
-    // What's left can only be stars, or a `^` standing for the end of the address
-    pattern[pi..].iter().all(|&c| c == b'*' || c == b'^')
-}
-
-/// `$domain=a.com|~b.a.com`: the sites the page making the request must (or mustn't) be on.
+/// `$domain=a.com|b.com`: the sites the page making the request must be on. `~site` is only
+/// read in an exception (`wide`), where leaving it out lets the exception apply on more sites.
 #[derive(Default)]
-struct Domains {
-    include: Vec<String>,
-    exclude: Vec<String>,
-}
+struct Domains(Vec<String>);
 
 impl Domains {
-    fn parse(value: &str) -> Result<Self, String> {
+    fn parse(value: &str, wide: bool) -> Result<Self, String> {
         let mut domains = Self::default();
         for entry in value.split('|').map(str::trim).filter(|e| !e.is_empty()) {
-            let (negated, site) = entry.strip_prefix('~').map_or((false, entry), |site| (true, site));
+            if entry.starts_with('~') {
+                if wide {
+                    continue;
+                }
+                return Err(format!("the domain {entry} isn't supported"));
+            }
             // `example.*` and regular expressions can't be checked by name
-            if !site.contains('.') || !site.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+            if !entry.contains('.') || !entry.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
                 return Err(format!("the domain {entry} can't be checked"));
             }
-            let site = site.to_ascii_lowercase();
-            if negated { domains.exclude.push(site) } else { domains.include.push(site) }
+            domains.0.push(entry.to_ascii_lowercase());
         }
         Ok(domains)
     }
 
     fn allows(&self, site: &str) -> bool {
-        (self.include.is_empty() || on_domain_list(&self.include, site)) && !on_domain_list(&self.exclude, site)
+        self.0.is_empty() || on_domain_list(&self.0, site)
     }
 }
 
@@ -463,7 +425,7 @@ impl Path {
         Ok(Step::Keys(vec![name.to_string()]))
     }
 
-    /// `[?(test)]`, `[*]`, or `[key, 'key', "key"]`. Array positions and slices aren't supported.
+    /// `[?(test)]` or `[key, 'key', "key"]`. Array positions and slices aren't supported.
     fn bracket(reader: &mut Reader) -> Result<Step, String> {
         reader.expect("[")?;
         reader.skip_space();
@@ -474,11 +436,6 @@ impl Path {
             reader.skip_space();
             reader.expect("]")?;
             return Ok(Step::Filter(test));
-        }
-        if reader.eat("*") {
-            reader.skip_space();
-            reader.expect("]")?;
-            return Ok(Step::All);
         }
 
         let mut keys = vec![];
@@ -501,7 +458,7 @@ impl Path {
         Ok(Step::Keys(keys))
     }
 
-    /// `has k`, `key-eq k v`, `key-substr k v`, or `@.a.b` (has `$.a.b`).
+    /// `has k`, `key-eq k true` (a bare JSON value), `key-substr k 'text'`, or `@.a.b` (has `$.a.b`).
     fn test(reader: &mut Reader) -> Result<Test, String> {
         reader.skip_space();
         if reader.eat("@") {
@@ -514,26 +471,17 @@ impl Path {
         match test {
             "has" => Ok(Test::Has(key)),
             "key-eq" => {
-                let value = match reader.quoted()? {
-                    Some(text) => Value::String(text.to_string()),
-                    // Bare values are JSON: true, false, null, or a number
-                    None => {
-                        let len  = reader.rest.find(|c: char| c == ')' || c.is_whitespace()).unwrap_or(reader.rest.len());
-                        let word = &reader.rest[..len];
-                        reader.rest = &reader.rest[len..];
-                        match serde_json::from_str::<Value>(word) {
-                            Ok(value @ (Value::Bool(_) | Value::Null | Value::Number(_))) => value,
-                            _ => return Err(format!("the value {word} can't be compared")),
-                        }
-                    }
-                };
-                Ok(Test::Equals(key, value))
+                // A bare JSON value: true, false, null, or a number (quoted text isn't supported)
+                let len  = reader.rest.find(|c: char| c == ')' || c.is_whitespace()).unwrap_or(reader.rest.len());
+                let word = &reader.rest[..len];
+                reader.rest = &reader.rest[len..];
+                match serde_json::from_str::<Value>(word) {
+                    Ok(value @ (Value::Bool(_) | Value::Null | Value::Number(_))) => Ok(Test::Equals(key, value)),
+                    _ => Err(format!("the value {word} can't be compared")),
+                }
             }
             "key-substr" => {
-                let text = match reader.quoted()? {
-                    Some(text) => text,
-                    None => reader.name().ok_or("key-substr needs a value")?,
-                };
+                let text = reader.quoted()?.ok_or("key-substr needs a quoted value")?;
                 Ok(Test::Contains(key, text.to_string()))
             }
             other => Err(format!("the filter {other} isn't supported")),
@@ -700,9 +648,7 @@ pub fn is_json(res: &Response<Body>) -> bool {
 /// `MAX_JSON_BYTES`; a bigger one, one that isn't JSON, or one nothing matched goes on with
 /// the same content.
 pub async fn prune_response(res: Response<Body>, matched: &Matched, trace: &Trace) -> Response<Body> {
-    let Ok(res) = decode_response(res) else {
-        return Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::empty()).expect("static response");
-    };
+    let Ok(res) = decode_response(res) else { return bad_gateway() };
     let (mut parts, body) = res.into_parts();
 
     // Read it all, unless it turns out too big or breaks off: then pass on what came, and the rest
@@ -832,12 +778,13 @@ pub mod tests {
 
     #[test]
     fn rule_lines_are_read_with_their_escapes_and_modifiers() {
-        let line = r"||example.org^$xmlhttprequest,jsonprune=\$..[one\, 'two three'],domain=a.com|~b.a.com";
+        let line = r"||example.org/$xmlhttprequest,jsonprune=\$..[one\, 'two three'],domain=a.com|b.com";
         let Ok(Some(Line::Rule(rule))) = parse_line(line) else { panic!("parsed") };
         assert_eq!(rule.expression, "$..[one, 'two three']");
         assert!(rule.when.xhr_only);
         assert!(rule.when.applies("https://www.example.org/x", "a.com", "xmlhttprequest"));
-        assert!(!rule.when.applies("https://www.example.org/x", "b.a.com", "xmlhttprequest"), "~ excludes a site");
+        assert!(rule.when.applies("https://www.example.org/x", "www.b.com", "xmlhttprequest"));
+        assert!(!rule.when.applies("https://www.example.org/x", "c.com", "xmlhttprequest"), "domain= is where it applies");
         assert!(!rule.when.applies("https://www.example.org/x", "a.com", "script"));
         assert!(!rule.when.applies("https://notexample.org/x", "a.com", "xmlhttprequest"), "|| is the site or a subdomain");
 
@@ -850,32 +797,52 @@ pub mod tests {
     #[test]
     fn rules_that_cant_be_applied_exactly_are_dropped() {
         for line in [
-            r"||a.com^$jsonprune=\$.a,third-party",
+            r"||a.com/$jsonprune=\$.a,third-party",
             r"/ads\d+/$jsonprune=\$.a",
-            r"||a.com^$jsonprune=\$.a,domain=a.*",
-            r"||a.com^$jsonprune=\$.a[0]",
-            r"||a.com^$jsonprune=\$.a..",
-            r"||a.com^$jsonprune=\$.a[?(key-gt 'x' 1)]",
-            r"||a.com^$jsonprune=\$",
-            r"||a.com^$jsonprune",
-            r"||a.com^$jsonprune=.a",
+            r"||a.com/$jsonprune=\$.a,domain=a.*",
+            r"||a.com/$jsonprune=\$.a[0]",
+            r"||a.com/$jsonprune=\$.a..",
+            r"||a.com/$jsonprune=\$.a[?(key-gt 'x' 1)]",
+            r"||a.com/$jsonprune=\$",
+            r"||a.com/$jsonprune",
+            r"||a.com/$jsonprune=.a",
+            // Syntax no enabled list uses, so it isn't supported
+            r"||a.com/$jsonprune=\$.a,match-case",
+            r"||a.com/$jsonprune=\$.a,domain=a.com|~b.a.com",
+            r"||a.com^$jsonprune=\$.a",
+            r"|https://a.com/x|$jsonprune=\$.a",
+            r"||a.com/$jsonprune=\$.a,xhr",
+            r"||a.com/$jsonprune=\$.a[*]",
+            r"||a.com/$jsonprune=\$.a[?(key-eq 'k' 'v')]",
+            r"||a.com/$jsonprune=\$.a[?(key-substr k v)]",
         ] {
             assert!(parse_line(line).is_err(), "{line}");
         }
-        let rules = Rules::parse("||a.com^$jsonprune=\\$.a,third-party\n||a.com^$jsonprune=\\$.b");
-        assert_eq!((rules.count(), rules.dropped.len()), (1, 1));
-        assert!(rules.dropped[0].contains("third-party"), "{:?}", rules.dropped);
+        let rules = Rules::parse("||a.com/$jsonprune=\\$.a,match-case\n||a.com/$jsonprune=\\$.a,domain=~b.com\n||a.com/$jsonprune=\\$.b");
+        assert_eq!((rules.count(), rules.dropped.len()), (1, 2));
+        assert!(rules.dropped[0].contains("match-case") && rules.dropped[1].contains("~b.com"), "{:?}", rules.dropped);
     }
 
     #[test]
     fn exceptions_turn_rules_off() {
-        let text = "||a.com^$jsonprune=\\$.ad\n||a.com^$jsonprune=\\$.banner\n@@||a.com/keep^$jsonprune\n@@||a.com/one^$jsonprune=\\$.ad";
+        let text = "||a.com/$jsonprune=\\$.ad\n||a.com/$jsonprune=\\$.banner\n@@||a.com/keep^$jsonprune\n@@||a.com/one^$jsonprune=\\$.ad";
         let rules = rules(text);
         assert_eq!(Matched::find(&rules, "https://a.com/x", "https://a.com/", "other").unwrap().which.len(), 2);
         assert!(Matched::find(&rules, "https://a.com/keep", "https://a.com/", "other").is_none(), "all of them");
         let one = Matched::find(&rules, "https://a.com/one", "https://a.com/", "other").unwrap();
         assert_eq!(one.which.len(), 1, "only the one it names");
         assert_eq!(rules.rules[one.which[0]].expression, "$.banner");
+    }
+
+    /// An exception using syntax rules can't (`|`, `^`, `~site`, `$match-case`) is read more
+    /// widely instead of dropped, so it can only turn off more pruning, never less.
+    #[test]
+    fn exceptions_are_read_widely() {
+        let text  = "||a.com/$jsonprune=\\$.ad\n@@|https://a.com/keep^$jsonprune,match-case,domain=a.com|~b.a.com";
+        let rules = rules(text);
+        assert_eq!((rules.count(), rules.exceptions.len()), (1, 1), "{:?}", rules.dropped);
+        assert!(Matched::find(&rules, "https://a.com/KEEP/x", "https://b.a.com/", "other").is_none(), "any case, any separator, and on b.a.com too");
+        assert!(Matched::find(&rules, "https://a.com/other", "https://a.com/", "other").is_some());
     }
 
     #[test]
@@ -888,12 +855,8 @@ pub mod tests {
         // AdGuard's own examples
         assert_eq!(pick("$..[one, \"two three\"]", json!({ "one": 1, "two": { "two three": 23, "four five": 45 } })), json!({ "two": { "four five": 45 } }));
         assert_eq!(pick("$.a[?(has ad_origin)]", json!({ "a": [{ "ad_origin": "a", "b": 42 }, { "b": 1234 }] })), json!({ "a": [{ "b": 1234 }] }));
-        assert_eq!(
-            pick("$.*.*[?(key-eq 'Some key' 'Some value')]", json!({ "a": { "b": { "c": { "Some key": "Some value" }, "d": { "Some key": "Other value" } } }, "e": { "f": [{ "Some key": "Some value" }, { "Some key": "Other value" }] } })),
-            json!({ "a": { "b": { "d": { "Some key": "Other value" } } }, "e": { "f": [{ "Some key": "Other value" }] } })
-        );
         assert_eq!(pick("$.elems[?(has \"$.a.b.c\")]", json!({ "elems": [{ "a": { "b": { "c": 123 } } }, { "a": { "b": {} } }] })), json!({ "elems": [{ "a": { "b": {} } }] }));
-        assert_eq!(pick("$.elems[?(key-eq \"$.a.b.c\" \"abc\")]", json!({ "elems": [{ "a": { "b": { "c": 123 } } }, { "a": { "b": { "c": "abc" } } }] })), json!({ "elems": [{ "a": { "b": { "c": 123 } } }] }));
+        assert_eq!(pick("$.*.*[?(key-substr 'k' 'ad')]", json!({ "a": { "b": [{ "k": "an ad" }, { "k": "news" }] } })), json!({ "a": { "b": [{ "k": "news" }] } }));
 
         // Bare JSON values, the node itself as the key, `*` as the last step
         assert_eq!(pick("$.feed.*..[?(key-eq \"$.isAd\" true)]", json!({ "feed": { "x": [{ "isAd": true }, { "isAd": false }] } })), json!({ "feed": { "x": [{ "isAd": false }] } }));
@@ -914,13 +877,13 @@ pub mod tests {
         assert!(matches("||pluto.tv/*/session.json", "https://boot.pluto.tv/v4/session.json?a"));
         assert!(!matches("||pluto.tv/*/session.json", "https://notpluto.tv/v4/session.json"));
         assert!(matches("/GetPlaybackResources?", "https://atv-ps.amazon.com/cdp/catalog/GetPlaybackResources?asin=1"));
-        assert!(matches("||example.org^", "https://example.org"));
-        assert!(matches("||example.org^", "https://example.org:8443/a"));
-        assert!(!matches("||example.org^", "https://example.organic/"));
-        assert!(matches("|https://a.com/x|", "https://a.com/x"));
-        assert!(!matches("|https://a.com/x|", "https://a.com/xy"));
-        assert!(!Pattern::parse("/Path", true).unwrap().matches("https://a.com/path"), "$match-case");
-        assert_eq!(host_of("https://user@X.com:443/home?q"), "X.com");
+        assert!(matches("/i/api/graphql/*/HomeTimeline", "https://x.com/i/api/graphql/abc/HomeTimeline?v=1"));
+        assert!(!matches("||x.com/i/api", "https://x.com.evil.net/i/api"));
+
+        // An exception's ^ and | anchors are read as wider
+        let wide = |pattern: &str, url: &str| Pattern::parse(pattern, true).unwrap().matches(url);
+        assert!(wide("||example.org^", "https://example.org:8443/a"));
+        assert!(wide("|https://a.com/x|", "https://a.com/xy"));
     }
 
     #[tokio::test]

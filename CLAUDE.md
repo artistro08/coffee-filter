@@ -155,7 +155,7 @@ Each of these cost real time; don't relearn them.
 - **Sandboxed Store apps can't reach `127.0.0.1`.** The PAC returns `PROXY 127.0.0.1:18228; DIRECT` so they fall back to direct instead of losing the internet.
 - **Windows Update and Store downloads use the user's proxy and reject any MITM** (0x80240437). `SYSTEM_HOSTS` in `sysproxy.rs` always go direct and are never decrypted.
 - **Qt apps (Stream Deck) reject a fixed proxy**; that's why Windows gets a PAC URL, not `ProxyServer`.
-- **`certutil -user -delstore` shows a confirmation dialog** that hung the core when run hidden. Removal runs one elevated `cmd` for both stores, and every elevated step has a time limit.
+- **`certutil -user -delstore` shows a confirmation dialog** that hung the core when run hidden. Removal runs one elevated `certutil -delstore Root` (machine store only), and every elevated step has a time limit.
 - **Never decrypt private or local addresses**, and refuse public names that resolve to them (DNS rebinding): `PublicOnly` resolver, `resolve_public` for tunnels, `points_local` for WebSockets.
 - **Excluded apps** are found from the TCP table (`apps.rs`): match only established rows, cache briefly.
 

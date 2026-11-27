@@ -4,8 +4,8 @@ use crate::{
     apps, ca,
     config::ExcludedApp,
     cosmetic,
-    log::{Log, Trace, without_query},
-    net::{is_private_host, is_private_ip, on_domain_list},
+    log::{Log, Trace, error_chain, without_query},
+    net::{bad_gateway, is_private_host, is_private_ip, on_domain_list},
     problems, prune, sysproxy, userscripts,
 };
 use adblock::{Engine, request::Request as AdRequest};
@@ -142,38 +142,23 @@ fn local_refused() -> RequestOrResponse {
 // BLOCKED PAGE
 // =========================================================================
 
-/// A blank in the blocked page, filled per page.
-#[derive(Clone, Copy)]
-enum Blank {
-    AccentLight,
-    AccentDark,
-    Exclude,
-    Reason,
-    Url,
-}
-
 /// What a blocked page shows, instead of a blank tab (Windows 11 styled, light and dark), with
-/// the app icon built in so the page needs nothing from the network. Cut once at its blanks,
-/// so each page is put together in one pass instead of copying the whole page per blank.
-static BLOCKED_PAGE: std::sync::LazyLock<Vec<(String, Option<Blank>)>> = std::sync::LazyLock::new(|| {
+/// the app icon built in so the page needs nothing from the network. Cut once at its blanks
+/// (each part is followed by the blank's name, or "" at the end), so each page is put
+/// together in one pass instead of copying the whole page per blank.
+static BLOCKED_PAGE: std::sync::LazyLock<Vec<(String, &'static str)>> = std::sync::LazyLock::new(|| {
     use base64::{Engine as _, prelude::BASE64_STANDARD};
-    const BLANKS: [(&str, Blank); 5] = [
-        ("__CF_ACCENT_LIGHT__", Blank::AccentLight),
-        ("__CF_ACCENT_DARK__", Blank::AccentDark),
-        ("__CF_EXCLUDE__", Blank::Exclude),
-        ("__CF_REASON__", Blank::Reason),
-        ("__CF_URL__", Blank::Url),
-    ];
+    const BLANKS: [&str; 5] = ["__CF_ACCENT_LIGHT__", "__CF_ACCENT_DARK__", "__CF_EXCLUDE__", "__CF_REASON__", "__CF_URL__"];
     let icon = BASE64_STANDARD.encode(include_bytes!("../../app/Assets/Square150x150Logo.png"));
     let page = include_str!("blocked.html").replace("__CF_ICON__", &icon);
 
     let mut parts = vec![];
     let mut rest  = page.as_str();
-    while let Some((at, name, blank)) = BLANKS.iter().filter_map(|(name, blank)| rest.find(name).map(|at| (at, *name, *blank))).min_by_key(|(at, ..)| *at) {
-        parts.push((rest[..at].to_string(), Some(blank)));
-        rest = &rest[at + name.len()..];
+    while let Some((at, blank)) = BLANKS.iter().filter_map(|blank| rest.find(blank).map(|at| (at, *blank))).min_by_key(|(at, _)| *at) {
+        parts.push((rest[..at].to_string(), blank));
+        rest = &rest[at + blank.len()..];
     }
-    parts.push((rest.to_string(), None));
+    parts.push((rest.to_string(), ""));
     parts
 });
 
@@ -208,13 +193,13 @@ fn blocked_page(url: &str, host: &str, reason: &str) -> String {
     let mut page = String::with_capacity(BLOCKED_PAGE.iter().map(|(text, _)| text.len()).sum::<usize>() + url.len() + 512);
     for (text, blank) in BLOCKED_PAGE.iter() {
         page.push_str(text);
-        page.push_str(match blank {
-            Some(Blank::AccentLight) => &light,
-            Some(Blank::AccentDark) => &dark,
-            Some(Blank::Exclude) => &exclude,
-            Some(Blank::Reason) => &reason,
-            Some(Blank::Url) => &url,
-            None => "",
+        page.push_str(match *blank {
+            "__CF_ACCENT_LIGHT__" => &light,
+            "__CF_ACCENT_DARK__" => &dark,
+            "__CF_EXCLUDE__" => &exclude,
+            "__CF_REASON__" => &reason,
+            "__CF_URL__" => &url,
+            _ => "",
         });
     }
     page
@@ -336,11 +321,6 @@ impl Blocker {
             None if addrs.is_empty() => Resolved::Unchecked,
             None => Resolved::Local,
         }
-    }
-
-    /// A public site name (not excluded) whose every address is on this PC or the home network.
-    async fn points_local(&self, host: &str, port: u16) -> bool {
-        matches!(self.resolve_public(host, port).await, Resolved::Local)
     }
 
     /// Does this connection come from an app you excluded? Free when none are excluded.
@@ -528,7 +508,7 @@ impl Blocker {
         };
         let engine  = self.shared.engine.read().unwrap().clone();
         let scripts = self.shared.userscripts.read().unwrap().clone();
-        let page    = cosmetic::Page { url: &url, navigation, endpoint: Some(&self.shared.generic_path) };
+        let page    = cosmetic::Page { url: &url, navigation, endpoint: &self.shared.generic_path };
         // Userscripts are matched only once the response turns out to be a page
         cosmetic::inject(res, &engine, || userscripts::for_page(&scripts, &url), &page, &self.shared.trace)
     }
@@ -566,8 +546,9 @@ impl HttpHandler for Blocker {
             return req.into();
         }
 
-        // WebSockets connect on their own too, past PublicOnly
-        if websocket && self.points_local(&host, req.uri().port_u16().unwrap_or(80)).await {
+        // WebSockets connect on their own too, past PublicOnly: refuse a public name whose
+        // every address is on this PC or the home network
+        if websocket && matches!(self.resolve_public(&host, req.uri().port_u16().unwrap_or(80)).await, Resolved::Local) {
             return local_refused();
         }
         self.filter_request(req).await
@@ -581,20 +562,13 @@ impl HttpHandler for Blocker {
     /// detailed log gets the reason.
     async fn handle_error(&mut self, _ctx: &HttpContext, err: hyper_util::client::legacy::Error) -> Response<Body> {
         if self.shared.trace.is_on() {
-            let mut why = err.to_string();
-            let mut source = std::error::Error::source(&err);
-            while let Some(inner) = source {
-                why.push_str(": ");
-                why.push_str(&inner.to_string());
-                source = inner.source();
-            }
             let url = match &self.pending {
                 Pending::Page { url, .. } | Pending::Install(url) => without_query(url),
                 Pending::Nothing => "",
             };
-            self.shared.trace.write(format_args!("upstream error {url}: {why}"));
+            self.shared.trace.write(format_args!("upstream error {url}: {}", error_chain(&err)));
         }
-        Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::empty()).expect("static response")
+        bad_gateway()
     }
 
     /// Decrypt only HTTPS on 443 for hosts not excluded; everything else is tunneled untouched.
@@ -677,7 +651,7 @@ mod tests {
 
     #[test]
     fn blocked_page_shows_the_address_safely() {
-        assert_eq!(BLOCKED_PAGE.iter().filter(|(_, blank)| blank.is_some()).count(), 5, "the page is cut once at each of its blanks");
+        assert_eq!(BLOCKED_PAGE.iter().filter(|(_, blank)| !blank.is_empty()).count(), 5, "the page is cut once at each of its blanks");
         let page = blocked_page("https://evil.com/<script>alert(1)</script>__CF_EXCLUDE__", "evil.com", LISTED);
         assert!(page.contains("https://evil.com/&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!page.contains("<script>alert"));

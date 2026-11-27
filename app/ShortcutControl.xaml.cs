@@ -34,7 +34,7 @@ namespace CoffeeFilter;
 /// titled after the setting ("Join meeting shortcut"). While the dialog is open a low-level keyboard hook captures the keys before Windows and
 /// other apps see them, so any combination can be pressed; Save is on only for a valid one that isn't taken.
 /// </summary>
-public sealed partial class ShortcutControl : UserControl, IDisposable
+public sealed partial class ShortcutControl : UserControl
 {
     private readonly nuint _ignoreKeyEventFlag = 0x5555;
     private readonly HashSet<VirtualKey> _modifierKeysOnEntering = [];
@@ -551,11 +551,9 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
         }
     }
 
-    /// <summary>
-    /// Closes the dialog without saving and lets go of the keyboard (Leaf: the Settings window closed, or the page
-    /// unloaded, while it was open).
-    /// </summary>
-    public void CloseDialog()
+    // Closes the dialog without saving and lets go of the keyboard (Leaf: the Settings window closed, or the page
+    // unloaded, while it was open)
+    private void CloseDialog()
     {
         if (!_dialogOpen)
         {
@@ -590,11 +588,8 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
         DialogClosed?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ShortcutControl_Unloaded(object sender, RoutedEventArgs e)
-    {
-        CloseDialog();
-        Dispose();
-    }
+    // The hook only lives while the dialog is open, so closing it lets go of the keyboard too
+    private void ShortcutControl_Unloaded(object sender, RoutedEventArgs e) => CloseDialog();
 
     private void C_ResetClick(object sender, RoutedEventArgs e)
     {
@@ -637,17 +632,7 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
         _shortcutDialog.Hide();
     }
 
-    private static bool ComboIsValid(HotkeySettings? settings)
-    {
-        if (settings != null && (settings.IsValid() || settings.IsEmpty()))
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
-    }
+    private static bool ComboIsValid(HotkeySettings? settings) => settings is not null && (settings.IsValid() || settings.IsEmpty());
 
     private void ShortcutDialog_Closing(ContentDialog sender, ContentDialogClosingEventArgs args)
     {
@@ -673,7 +658,6 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
                     VerticalAlignment = VerticalAlignment.Center,
                     Content = key,
                     IsTabStop = false,
-                    RenderKeyAsGlyph = true,
                     State = _hasConflict ? KeyVisualState.Warning : KeyVisualState.Normal,
                     Style = (Style)Application.Current.Resources["KeyChipStyle"],
                 };
@@ -688,12 +672,6 @@ public sealed partial class ShortcutControl : UserControl, IDisposable
             VisualStateManager.GoToState(this, "Normal", true);
             AutomationProperties.SetHelpText(EditButton, "None");
         }
-    }
-
-    /// <summary>Removes the keyboard hook if a dialog is still open.</summary>
-    public void Dispose()
-    {
-        UnhookKeys();
     }
 
     // Lets go of the keyboard, only if this picker holds it (there's one hook at a time)

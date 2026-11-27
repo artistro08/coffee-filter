@@ -157,17 +157,6 @@ pub fn classify(message: &str, error: &str) -> Option<(&'static str, String)> {
     None
 }
 
-/// Host part of `host:port` or a full URL.
-fn host_of(uri: &str) -> String {
-    let rest = uri.split_once("://").map_or(uri, |(_, r)| r);
-    let auth = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    let auth = auth.rsplit_once('@').map_or(auth, |(_, a)| a);
-    if let Some(v6) = auth.strip_prefix('[') {
-        return v6.split(']').next().unwrap_or(v6).to_string();
-    }
-    auth.split(':').next().unwrap_or(auth).to_ascii_lowercase()
-}
-
 // =========================================================================
 // TRACING LAYER
 // =========================================================================
@@ -207,16 +196,9 @@ impl Visit for Fields {
     }
 
     fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        // Include the whole cause chain; TLS alerts are usually a few levels down
         if field.name() == "error" {
-            // Include the whole cause chain; TLS alerts are usually a few levels down
-            let mut text = value.to_string();
-            let mut src  = value.source();
-            while let Some(e) = src {
-                text.push_str(": ");
-                text.push_str(&e.to_string());
-                src = e.source();
-            }
-            self.error = text;
+            self.error = crate::log::error_chain(value);
         }
     }
 }
@@ -227,11 +209,6 @@ const SPANS: [&str; 2] = ["proxy", "process_connect"];
 
 fn wanted(metadata: &Metadata<'_>) -> bool {
     if metadata.is_span() { SPANS.contains(&metadata.name()) } else { *metadata.level() <= Level::WARN }
-}
-
-fn debug_enabled() -> bool {
-    static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| std::env::var_os("COFFEE_FILTER_DEBUG").is_some())
 }
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProblemLayer {
@@ -256,16 +233,10 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProblemLayer {
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let mut fields = Fields::default();
         event.record(&mut fields);
-        let uri = ctx.event_scope(event).and_then(|scope| scope.from_root().find_map(|span| span.extensions().get::<SpanUri>().map(|u| u.0.clone())));
-
-        // COFFEE_FILTER_DEBUG=1 prints every proxy error, for diagnosing what broke
-        if debug_enabled() {
-            eprintln!("[{}] {:?} {} | {}", event.metadata().level(), uri, fields.message, fields.error);
-        }
-
         let Some((kind, detail)) = classify(&fields.message, &fields.error) else { return };
+        let uri = ctx.event_scope(event).and_then(|scope| scope.from_root().find_map(|span| span.extensions().get::<SpanUri>().map(|u| u.0.clone())));
         if let Some(uri) = uri {
-            self.0.record(&host_of(&uri), kind, detail);
+            self.0.record(&crate::net::host_of(&uri).to_ascii_lowercase(), kind, detail);
         }
     }
 }
@@ -284,13 +255,6 @@ mod tests {
         assert!(classify("Failed to forward request", "invalid peer certificate: UnknownIssuer").is_none(), "fails in the browser too");
         assert!(classify("Failed to establish TLS connection", "connection reset by peer").is_none(), "closed tab, not a rejection");
         assert!(classify("Failed to forward request", "dns error: no such host").is_none(), "site down is not ours");
-    }
-
-    #[test]
-    fn host_parsing() {
-        assert_eq!(host_of("api.example.com:443"), "api.example.com");
-        assert_eq!(host_of("https://Example.com:8443/path?q"), "example.com");
-        assert_eq!(host_of("[::1]:443"), "::1");
     }
 
     #[test]

@@ -116,11 +116,7 @@ public sealed record HotkeySettings
     /// <summary>True for a combination the app can register: Ctrl, Alt, or Win (Shift optional) with a letter, a number, F1–F24, Space, or Delete, and not Win+L or Alt+F4.</summary>
     public bool IsValid()
     {
-        if (IsAccessibleShortcut())
-        {
-            return false;
-        }
-
+        // Without Ctrl, Alt, or Win it's plain typing, which also rules out Tab and Shift+Tab (IsAccessibleShortcut)
         if (!(Alt || Ctrl || Win) || Code == 0 || !Hotkey.TryCreate(Modifiers, Code, out var hotkey))
         {
             return false;
@@ -158,41 +154,11 @@ public sealed record HotkeySettings
     public bool IsEmpty() => !Alt && !Ctrl && !Win && !Shift && Code == 0;
 
     /// <summary>Tab and Shift+Tab move focus, so they're never a shortcut.</summary>
-    public bool IsAccessibleShortcut() =>
-        (!Alt && !Ctrl && !Win && Shift && Code == VkTab)
-        || (!Alt && !Ctrl && !Win && !Shift && Code == VkTab);
+    public bool IsAccessibleShortcut() => !Alt && !Ctrl && !Win && Code == VkTab;
 
     /// <summary>The key caps' text joined with "+" ("Win+Shift+F7"); empty for no keys.</summary>
-    public override string ToString()
-    {
-        List<string> parts = [];
-        if (Win)
-        {
-            parts.Add("Win");
-        }
-
-        if (Ctrl)
-        {
-            parts.Add("Ctrl");
-        }
-
-        if (Alt)
-        {
-            parts.Add("Alt");
-        }
-
-        if (Shift)
-        {
-            parts.Add("Shift");
-        }
-
-        if (Code > 0)
-        {
-            parts.Add(KeyName(Code));
-        }
-
-        return string.Join("+", parts);
-    }
+    public override string ToString() =>
+        string.Join("+", new[] { Win ? "Win" : null, Ctrl ? "Ctrl" : null, Alt ? "Alt" : null, Shift ? "Shift" : null, Code > 0 ? KeyName(Code) : null }.OfType<string>());
 
     private HotkeyModifiers Modifiers =>
         (Win ? HotkeyModifiers.Win : 0) | (Ctrl ? HotkeyModifiers.Ctrl : 0) | (Alt ? HotkeyModifiers.Alt : 0) | (Shift ? HotkeyModifiers.Shift : 0);

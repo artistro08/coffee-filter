@@ -592,21 +592,6 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Turn the flyout on or off. Off leaves a flyout that was already made hidden rather than
-    /// closing it: WinUI crashes (in Microsoft.UI.Input) when a new one is made after closing one.
-    /// </summary>
-    public void SetFlyoutEnabled(bool enabled)
-    {
-        // The window sets its switch on every open; nothing changed, nothing to save
-        if (Settings.UseFlyout == enabled)
-        {
-            return;
-        }
-        Settings.UseFlyout = enabled;
-        Settings.Save();
-    }
-
-    /// <summary>
     /// The tray icon is declared in App.xaml. A click opens the flyout; its right-click menu is
     /// a TrayMenu, which keeps it clear of the taskbar. This wires up the commands.
     /// </summary>

@@ -92,6 +92,13 @@ pub fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// `len` bytes from the OS random number generator, as hex (nonces, random paths).
+pub fn random_hex(len: usize) -> String {
+    let mut bytes = vec![0u8; len];
+    getrandom::fill(&mut bytes).expect("OS random number generator");
+    hex(&bytes)
+}
+
 /// The temp file a new version of `path` is written to first: name.ext.tmp, so two files
 /// with the same stem (engine.dat, engine.key) never share one.
 pub fn temp_path(path: &Path) -> PathBuf {

@@ -122,29 +122,6 @@ fn rule(value: &str, is_match: bool) -> Option<Rule> {
 // MATCHING
 // =========================================================================
 
-/// `*` matches any run of characters, everything else matches itself.
-fn glob(pattern: &str, text: &str) -> bool {
-    let (p, t) = (pattern.as_bytes(), text.as_bytes());
-    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
-    while ti < t.len() {
-        if pi < p.len() && p[pi] == b'*' {
-            star = Some(pi);
-            mark = ti;
-            pi  += 1;
-        } else if pi < p.len() && p[pi] == t[ti] {
-            pi += 1;
-            ti += 1;
-        } else if let Some(s) = star {
-            pi    = s + 1;
-            mark += 1;
-            ti    = mark;
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|&c| c == b'*')
-}
-
 /// Chrome match pattern: `*://*.example.com/path*`, or `<all_urls>`. Runs for every script on
 /// every page, so it compares without making copies.
 fn match_pattern(pattern: &MatchPattern, uri: &Uri) -> bool {
@@ -160,13 +137,13 @@ fn match_pattern(pattern: &MatchPattern, uri: &Uri) -> bool {
     let host_ok   = want == "*" || want.eq_ignore_ascii_case(host) || want.strip_prefix("*.").is_some_and(|base| net::on_domain_list(&[base], host));
     let path      = uri.path_and_query().map_or("/", |p| p.as_str());
 
-    scheme_ok && host_ok && glob(&pattern.path, path)
+    scheme_ok && host_ok && net::glob(&pattern.path, path, false)
 }
 
 fn rule_matches(rule: &Rule, url: &str, uri: &Uri) -> bool {
     match rule {
         Rule::Match(p) => p.as_ref().is_some_and(|p| match_pattern(p, uri)),
-        Rule::Glob(p) => glob(p, url),
+        Rule::Glob(p) => net::glob(p, url, false),
         Rule::Regex(re) => re.is_match(url),
     }
 }
@@ -338,9 +315,9 @@ pub async fn install_page(res: Response<Body>, url: &str) -> Response<Body> {
     if res.status() != StatusCode::OK {
         return res;
     }
-    let Ok(res) = decode_response(res) else { return res_error() };
+    let Ok(res) = decode_response(res) else { return net::bad_gateway() };
     let (mut parts, body) = res.into_parts();
-    let Ok(bytes) = Limited::new(body, MAX_SCRIPT_BYTES).collect().await.map(|c| c.to_bytes()) else { return res_error() };
+    let Ok(bytes) = Limited::new(body, MAX_SCRIPT_BYTES).collect().await.map(|c| c.to_bytes()) else { return net::bad_gateway() };
 
     let Some((header, code)) = std::str::from_utf8(&bytes).ok().and_then(|code| Some((parse_header(code)?, code))) else {
         return Response::from_parts(parts, Body::from(bytes));
@@ -353,10 +330,6 @@ pub async fn install_page(res: Response<Body>, url: &str) -> Response<Body> {
     parts.headers.insert(CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'unsafe-inline'".parse().expect("static header"));
     parts.headers.insert("cache-control", "no-store".parse().expect("static header"));
     Response::from_parts(parts, Body::from(html))
-}
-
-fn res_error() -> Response<Body> {
-    Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::empty()).expect("static response")
 }
 
 #[cfg(test)]
@@ -430,15 +403,6 @@ document.title = 'hi';";
         let code = "// ==UserScript==\n// @name All\n// ==/UserScript==\n";
         let s    = build(&parse_header(code).unwrap(), "", code);
         assert_eq!(for_page(std::slice::from_ref(&s), "https://anything.com/").len(), 1);
-    }
-
-    #[test]
-    fn glob_wildcards() {
-        assert!(glob("*", ""));
-        assert!(glob("https://*.com/*", "https://a.com/b"));
-        assert!(glob("a*b*c", "aXXbYYc"));
-        assert!(!glob("a*b*c", "aXXbYY"));
-        assert!(!glob("abc", "abcd"));
     }
 
     #[test]

@@ -250,6 +250,20 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// A dialog over this window with a main button and Cancel, the main button as the default
+    /// (HoldPrimary takes that away for a dialog a web page's link opened).
+    /// </summary>
+    private ContentDialog Dialog(string title, object content, string primary) => new()
+    {
+        XamlRoot          = Content.XamlRoot,
+        Title             = title,
+        Content           = content,
+        PrimaryButtonText = primary,
+        CloseButtonText   = "Cancel",
+        DefaultButton     = ContentDialogButton.Primary,
+    };
+
+    /// <summary>
     /// For a web page's link or the tray flyout: wait for a window that was just opened to
     /// load, then bring it in front (a minimized one comes back).
     /// </summary>
@@ -398,7 +412,20 @@ public sealed partial class MainWindow : Window
         _app.SetTrayVisible(TraySwitch.IsOn);
     }
 
-    private void OnFlyoutToggled(object sender, RoutedEventArgs e) => _app.SetFlyoutEnabled(FlyoutSwitch.IsOn);
+    /// <summary>
+    /// Off leaves a flyout that was already made hidden rather than closing it: WinUI crashes (in
+    /// Microsoft.UI.Input) when a new one is made after closing one.
+    /// </summary>
+    private void OnFlyoutToggled(object sender, RoutedEventArgs e)
+    {
+        // Set once when the window opens; nothing changed, nothing to save
+        if (_app.Settings.UseFlyout == FlyoutSwitch.IsOn)
+        {
+            return;
+        }
+        _app.Settings.UseFlyout = FlyoutSwitch.IsOn;
+        _app.Settings.Save();
+    }
 
     private void OnLaunchToggled(object sender, RoutedEventArgs e)
     {

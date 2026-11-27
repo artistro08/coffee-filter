@@ -1,6 +1,6 @@
 [package]
 name = "coffee-filter-core"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 
 [dependencies]
@@ -23,7 +23,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1_smol = { version = "1.0.1", features = ["std"] }
 sha2 = "0.10"
-socket2 = "0.6"
 time = "0.3.55"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "signal", "sync"] }
 tower-layer = "0.3"

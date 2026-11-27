@@ -130,15 +130,13 @@ fn bind_exclusive(port: u16) -> io::Result<TcpListener> {
     use std::os::windows::io::AsRawSocket;
     use windows::Win32::Networking::WinSock::{SO_EXCLUSIVEADDRUSE, SOCKET, SOL_SOCKET, setsockopt};
 
-    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+    let socket = tokio::net::TcpSocket::new_v4()?;
     // SAFETY: a valid socket handle owned by `socket` for the whole call, and a 4-byte option value.
     if unsafe { setsockopt(SOCKET(socket.as_raw_socket() as usize), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, Some(&1i32.to_ne_bytes())) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    socket.bind(&std::net::SocketAddr::from(([127, 0, 0, 1], port)).into())?;
-    socket.listen(1024)?;
-    socket.set_nonblocking(true)?;
-    TcpListener::from_std(socket.into())
+    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
+    socket.listen(1024)
 }
 
 /// How an excluded app is named in commands: its package family name, else its path.
@@ -623,6 +621,30 @@ mod tests {
             Ok(Command::AddExcludedApp { path: None, package: Some(p), .. }) if p == "Microsoft.WindowsStore_8wekyb3d8bbwe"
         ));
         assert!(serde_json::from_str::<Command>(r#"{"cmd":"rm -rf"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_port_cannot_be_shared() {
+        use std::os::windows::io::AsRawSocket;
+        use windows::{
+            Win32::Networking::WinSock::{SO_EXCLUSIVEADDRUSE, SOCKET, SOL_SOCKET, getsockopt},
+            core::PSTR,
+        };
+
+        let listener = bind_exclusive(0).unwrap();
+        let addr     = listener.local_addr().unwrap();
+        assert!(addr.ip().is_loopback());
+
+        // SO_EXCLUSIVEADDRUSE is on, read back from Windows
+        let mut value = [0u8; 4];
+        let mut len   = 4i32;
+        // SAFETY: a valid socket owned by `listener`, and a 4-byte buffer with its length.
+        let result = unsafe { getsockopt(SOCKET(listener.as_raw_socket() as usize), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, PSTR(value.as_mut_ptr()), &mut len) };
+        assert_eq!((result, i32::from_ne_bytes(value)), (0, 1), "another program could bind the port alongside us");
+
+        // And it accepts connections
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        listener.accept().await.unwrap();
     }
 
     #[test]

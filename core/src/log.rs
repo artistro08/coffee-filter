@@ -151,6 +151,18 @@ impl Trace {
     }
 }
 
+/// An error with every cause under it, `outer: inner: ...`.
+pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text   = error.to_string();
+    let mut source = error.source();
+    while let Some(inner) = source {
+        text.push_str(": ");
+        text.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    text
+}
+
 /// An address without its query string or fragment, for the detailed log.
 pub fn without_query(url: &str) -> &str {
     url.split(['?', '#']).next().unwrap_or(url)

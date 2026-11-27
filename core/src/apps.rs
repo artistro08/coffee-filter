@@ -141,11 +141,9 @@ impl Cache {
 }
 
 /// Whether the connection from `client` belongs to one of `apps`. Runs the Windows lookups
-/// off the async workers; the answer is cached per connection.
+/// off the async workers; the answer is cached per connection. The caller skips this when
+/// no app is excluded.
 pub async fn is_excluded(apps: &[ExcludedApp], cache: &Cache, client: SocketAddr) -> bool {
-    if apps.is_empty() {
-        return false;
-    }
     if let Some(known) = cache.get(client) {
         return known;
     }

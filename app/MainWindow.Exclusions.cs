@@ -88,15 +88,7 @@ public sealed partial class MainWindow
             MinHeight       = bulk ? 160 : 0,
             MinWidth        = 400,
         };
-        var dialog = new ContentDialog
-        {
-            XamlRoot          = Content.XamlRoot,
-            Title             = bulk ? "Add sites" : "Add a site",
-            Content           = box,
-            PrimaryButtonText = "Add",
-            CloseButtonText   = "Cancel",
-            DefaultButton     = ContentDialogButton.Primary,
-        };
+        var dialog = Dialog(bulk ? "Add sites" : "Add a site", box, "Add");
         if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary)
         {
             return;
@@ -117,14 +109,8 @@ public sealed partial class MainWindow
     {
         await ShowInFrontAsync();
 
-        var dialog = new ContentDialog
-        {
-            XamlRoot          = Content.XamlRoot,
-            Title             = "Exclude this site?",
-            Content           = new TextBlock { Text = $"{host} will never be decrypted or filtered, so its ads and trackers will load.", TextWrapping = TextWrapping.Wrap, MaxWidth = 400 },
-            PrimaryButtonText = "Exclude",
-            CloseButtonText   = "Cancel",
-        };
+        var message = new TextBlock { Text = $"{host} will never be decrypted or filtered, so its ads and trackers will load.", TextWrapping = TextWrapping.Wrap, MaxWidth = 400 };
+        var dialog  = Dialog("Exclude this site?", message, "Exclude");
         HoldPrimary(dialog);
 
         // Only one dialog can be open at a time
@@ -327,16 +313,8 @@ public sealed partial class MainWindow
         panel.Children.Add(message);
         panel.Children.Add(list);
 
-        var dialog = new ContentDialog
-        {
-            XamlRoot               = Content.XamlRoot,
-            Title                  = "Exclude a Microsoft Store app",
-            Content                = panel,
-            PrimaryButtonText      = "Exclude",
-            CloseButtonText        = "Cancel",
-            DefaultButton          = ContentDialogButton.Primary,
-            IsPrimaryButtonEnabled = false,
-        };
+        var dialog = Dialog("Exclude a Microsoft Store app", panel, "Exclude");
+        dialog.IsPrimaryButtonEnabled = false;
 
         // One row per installed app (icon and name), made once and reused by the search; the
         // list holds these rows directly, so there's no data to translate for the list control

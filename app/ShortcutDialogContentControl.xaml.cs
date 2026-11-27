@@ -100,35 +100,7 @@ public sealed partial class ShortcutDialogContentControl : UserControl
     }
 
     /// <summary>True when <paramref name="newValue"/> lists the same keys as <see cref="Keys"/>.</summary>
-    public bool JudgeIfKeyValueSame(List<object> newValue)
-    {
-        List<object>? currentValue = _keys;
-
-        if (currentValue == null && newValue == null)
-        {
-            return true;
-        }
-
-        if (currentValue == null || newValue == null)
-        {
-            return false;
-        }
-
-        if (currentValue.Count != newValue.Count)
-        {
-            return false;
-        }
-
-        for (int index = 0; index < currentValue.Count; index++)
-        {
-            if (!Equals(currentValue[index], newValue[index]))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    public bool JudgeIfKeyValueSame(List<object> newValue) => _keys is not null && _keys.SequenceEqual(newValue);
 
     private static void OnIsErrorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((ShortcutDialogContentControl)d).DrawKeys();
 
@@ -163,7 +135,6 @@ public sealed partial class ShortcutDialogContentControl : UserControl
                 FontSize = 16,
                 FontWeight = FontWeights.SemiBold,
                 IsTabStop = false,
-                RenderKeyAsGlyph = true,
                 State = state,
                 Style = (Style)Application.Current.Resources["KeyChipStyle"],
             };

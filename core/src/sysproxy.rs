@@ -51,9 +51,7 @@ struct Backup {
 /// A fresh, unguessable PAC path for one proxy run, so web pages can't probe
 /// `127.0.0.1:<port>/proxy.pac` to tell that Coffee Filter is running.
 pub fn new_pac_path() -> String {
-    let mut bytes = [0u8; 12];
-    getrandom::fill(&mut bytes).expect("OS random number generator");
-    format!("/proxy-{}.pac", crate::config::hex(&bytes))
+    format!("/proxy-{}.pac", crate::config::random_hex(12))
 }
 
 /// Zen's list of sites that are never decrypted, copied as is from
