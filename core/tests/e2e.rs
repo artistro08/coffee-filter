@@ -118,6 +118,20 @@ fn curl(url: &str, headers: &[&str]) -> String {
     String::from_utf8(cmd.arg(url).output().unwrap().stdout).unwrap()
 }
 
+/// Status code for a badssl.com page through the proxy. badssl.com sometimes doesn't answer at
+/// all, which curl reports as "000" (no reply in time); only that is tried again, so a wrong
+/// answer (a bad certificate let through) still fails right away.
+fn curl_badssl(url: &str) -> String {
+    let mut code = curl(url, &[]);
+    for _ in 0..2 {
+        if code != "000" {
+            break;
+        }
+        code = curl(url, &[]);
+    }
+    code
+}
+
 /// GET through the proxy (asking for compression, like a browser) and return the body.
 fn curl_get(url: &str) -> String {
     let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\curl.exe");
@@ -258,9 +272,9 @@ fn proxy_end_to_end() {
         assert_json_pruned();
         // A site that can't be reached gets a 502, and the detailed log says why
         assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": true }))["ok"], true);
-        assert_eq!(curl("https://self-signed.badssl.com/", &[]), "502", "bad upstream cert refused");
-        assert_eq!(curl("https://expired.badssl.com/", &[]), "502", "expired upstream cert refused");
-        assert_eq!(curl("https://wrong.host.badssl.com/", &[]), "502", "a certificate for another name is refused");
+        assert_eq!(curl_badssl("https://self-signed.badssl.com/"), "502", "bad upstream cert refused");
+        assert_eq!(curl_badssl("https://expired.badssl.com/"), "502", "expired upstream cert refused");
+        assert_eq!(curl_badssl("https://wrong.host.badssl.com/"), "502", "a certificate for another name is refused");
         assert_eq!(core.send(json!({ "cmd": "set_detailed_log", "enabled": false }))["ok"], true);
         let log = fs::read_to_string(profile.join(r"CoffeeFilter\debug.log")).unwrap_or_default();
         assert!(log.contains("upstream error https://self-signed.badssl.com/"), "{log}");
