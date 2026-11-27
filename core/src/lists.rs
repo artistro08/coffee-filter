@@ -11,6 +11,7 @@ use adblock::{
 };
 use hudsucker::{futures::future::join_all, hyper::body::Bytes};
 use std::{
+    collections::HashSet,
     fs,
     io,
     path::{Path, PathBuf},
@@ -202,17 +203,8 @@ fn compile(config: &Config, library: Option<PathBuf>) -> (Engine, usize, String)
         None => {
             // Parsing ~1M rules is heavy and can wait, so it gives way to everything else on the PC
             let (engine, rules, prune) = crate::pressure::below_normal(|| {
-                let mut set   = FilterSet::new(false);
-                let mut rules = 0;
-                let mut prune = String::new();
-                for list in config.lists.iter().filter(|l| l.enabled) {
-                    if let Ok(text) = cache_path(list).and_then(fs::read_to_string) {
-                        rules += text.lines().filter(|l| is_rule(l)).count();
-                        prune.push_str(&prune_lines(&text));
-                        add_list(&mut set, text, list.trusted);
-                    }
-                }
-                (Engine::new_with_filter_set(set), rules, prune)
+                let (texts, rules, prune) = read_lists(config);
+                (engine_from(texts), rules, prune)
             });
 
             if let Ok(dir) = data_dir() {
@@ -229,6 +221,22 @@ fn compile(config: &Config, library: Option<PathBuf>) -> (Engine, usize, String)
         engine.use_resources(cosmetic::scriptlet_resources(&String::from_utf8_lossy(&json)));
     }
     (engine, rules, prune)
+}
+
+/// The enabled lists' cached text (each with whether its list is trusted), their rule count,
+/// and their `$jsonprune` lines. Lists not downloaded yet are skipped.
+pub fn read_lists(config: &Config) -> (Vec<(String, bool)>, usize, String) {
+    let mut texts = vec![];
+    let mut rules = 0;
+    let mut prune = String::new();
+    for list in config.lists.iter().filter(|l| l.enabled) {
+        if let Ok(text) = cache_path(list).and_then(fs::read_to_string) {
+            rules += text.lines().filter(|l| is_rule(l)).count();
+            prune.push_str(&prune_lines(&text));
+            texts.push((text, list.trusted));
+        }
+    }
+    (texts, rules, prune)
 }
 
 /// A list's `$jsonprune` lines, one per line. adblock-rust drops them as unknown, so they're
@@ -252,8 +260,8 @@ fn engine_key(config: &Config) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         // Bump when the way lists are compiled changes, so old engine.dat files are rebuilt
-        // (6: $jsonprune rules are kept in engine.prune)
-        + "\nformat:6"
+        // (6: $jsonprune rules are kept in engine.prune; 7: rules repeated across lists are left out)
+        + "\nformat:7"
 }
 
 /// The saved engine, its rule count, and its `$jsonprune` lines, if they were built from
@@ -271,15 +279,89 @@ fn load_cached_engine(key: &str) -> Option<(Engine, usize, String)> {
     Some((engine, rules.parse().ok()?, prune))
 }
 
-/// Add one list, detecting hosts-file format (`0.0.0.0 domain`) from its first rule.
-/// Network and cosmetic rules are both kept; AdGuard-only syntax is translated first.
-fn add_list(set: &mut FilterSet, text: String, trusted: bool) {
-    let first  = text.lines().map(|l| l.trim().trim_start_matches('\u{feff}')).find(|l| !l.is_empty() && !l.starts_with(['#', '!', '[']));
-    let hosts  = first.is_some_and(|l| l.starts_with("0.0.0.0") || l.starts_with("127.0.0.1") || l.starts_with("::"));
-    let format = if hosts { FilterFormat::Hosts } else { FilterFormat::Standard };
-    let text   = if hosts { text } else { cosmetic::translate_adguard(text) };
-    let perms  = if trusted { cosmetic::TRUSTED } else { PermissionMask::default() };
-    set.add_filter_list(text, ParseOptions { format, permissions: perms, ..Default::default() });
+/// Compile list texts (each with whether its list is trusted) into an engine. Network and
+/// cosmetic rules are both kept; AdGuard-only syntax is translated first.
+///
+/// adblock-rust keeps every copy of a rule, and lists share a lot of theirs (AdGuard DNS
+/// filter repeats most of AdGuard's Base and Spyware filters, hosts files repeat each other):
+/// about a quarter of the default lists' rules. A rule an earlier list already has is left out,
+/// which gives the same blocking from a smaller engine (less memory for as long as it runs).
+pub fn engine_from(lists: Vec<(String, bool)>) -> Engine {
+    // Compared as adblock-rust reads them: hosts files as they are, the rest translated
+    let lists: Vec<(String, bool, bool)> = lists
+        .into_iter()
+        .map(|(text, trusted)| {
+            let hosts = is_hosts(&text);
+            let text  = if hosts { text } else { cosmetic::translate_adguard(text) };
+            (text, hosts, trusted)
+        })
+        .collect();
+
+    let mut set  = FilterSet::new(false);
+    let mut seen = HashSet::new();
+    for (text, hosts, trusted) in &lists {
+        let unique: String = text.lines().filter(|line| rule_key(line, *hosts, *trusted).is_none_or(|key| seen.insert(key))).flat_map(|l| [l, "\n"]).collect();
+        let format         = if *hosts { FilterFormat::Hosts } else { FilterFormat::Standard };
+        let permissions    = if *trusted { cosmetic::TRUSTED } else { PermissionMask::default() };
+        set.add_filter_list(unique, ParseOptions { format, permissions, ..Default::default() });
+    }
+
+    // The originals aren't needed for compiling, which is when memory peaks
+    drop(seen);
+    drop(lists);
+    Engine::new_with_filter_set(set)
+}
+
+/// Whether a list is a hosts file (`0.0.0.0 domain`), from its first rule.
+fn is_hosts(text: &str) -> bool {
+    let first = text.lines().map(|l| l.trim().trim_start_matches('\u{feff}')).find(|l| !l.is_empty() && !l.starts_with(['#', '!', '[']));
+    first.is_some_and(|l| l.starts_with("0.0.0.0") || l.starts_with("127.0.0.1") || l.starts_with("::"))
+}
+
+/// What makes two rules the same (see `rule_key`).
+#[derive(PartialEq, Eq, Hash)]
+enum RuleKey<'a> {
+    /// `||site^`, or a hosts file's `0.0.0.0 site`, which adblock-rust reads as exactly that.
+    Site(&'a str),
+    /// Any other network rule, which means the same in every list.
+    Network(&'a str),
+    /// Cosmetic rules and scriptlets mean the same only between lists of the same trust: a
+    /// trusted list's scriptlets can do more.
+    Cosmetic(bool, &'a str),
+}
+
+/// A line's rule, to compare with other lists' rules, or None for anything else (comments,
+/// headers, and lines only adblock-rust's own parser should judge), which is always kept.
+fn rule_key(line: &str, hosts: bool, trusted: bool) -> Option<RuleKey<'_>> {
+    let line = line.trim();
+    if hosts {
+        // Only an address and a plain name; comments and anything unusual stay as written
+        let mut parts = line.split_whitespace();
+        return match (parts.next(), parts.next(), parts.next()) {
+            (Some(ip), Some(site), None) if ip.parse::<std::net::IpAddr>().is_ok() && plain_site(site) => Some(RuleKey::Site(site)),
+            _ => None,
+        };
+    }
+    if !is_rule(line) {
+        return None;
+    }
+    // Every cosmetic rule has a `#`; a network rule with one is only compared more narrowly
+    if line.contains('#') {
+        return Some(RuleKey::Cosmetic(trusted, line));
+    }
+    match line.strip_prefix("||").and_then(|l| l.strip_suffix('^')) {
+        Some(site) if plain_site(site) => Some(RuleKey::Site(site)),
+        _ => Some(RuleKey::Network(line)),
+    }
+}
+
+/// A lowercase site name with a dot in it and nothing else, which both rule forms read the
+/// same way (`localhost`, names with uppercase or odd characters are left to adblock-rust).
+fn plain_site(site: &str) -> bool {
+    site.contains('.')
+        && !site.starts_with('.')
+        && !site.ends_with('.')
+        && site.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 /// Rough count for the UI: skips blanks, comments, and headers.
@@ -336,9 +418,7 @@ mod tests {
 
     #[test]
     fn hosts_file_lists_block_their_domains() {
-        let mut set = FilterSet::new(false);
-        add_list(&mut set, "# comment\n0.0.0.0 tracker.example.net\n127.0.0.1 ads.example.org".into(), false);
-        let engine = Engine::new_with_filter_set(set);
+        let engine = engine_from(vec![("# comment\n0.0.0.0 tracker.example.net\n127.0.0.1 ads.example.org".into(), false)]);
         let check  = |u: &str| engine.check_network_request(&AdRequest::new(u, "https://site.com", "image", "GET").unwrap()).should_block();
 
         assert!(check("https://tracker.example.net/pixel.gif"));
@@ -348,11 +428,9 @@ mod tests {
 
     #[test]
     fn saved_engine_blocks_the_same() {
-        let mut set = FilterSet::new(false);
-        add_list(&mut set, "||ads.example.com^".into(), false);
-        add_list(&mut set, "0.0.0.0 hosts.example.net".into(), false);
+        let built      = engine_from(vec![("||ads.example.com^".into(), false), ("0.0.0.0 hosts.example.net".into(), false)]);
         let mut engine = Engine::default();
-        engine.deserialize(&Engine::new_with_filter_set(set).serialize()).unwrap();
+        engine.deserialize(&built.serialize()).unwrap();
         let check = |u: &str| engine.check_network_request(&AdRequest::new(u, "https://site.com", "script", "GET").unwrap()).should_block();
 
         assert!(check("https://ads.example.com/a.js"));
@@ -361,10 +439,73 @@ mod tests {
     }
 
     #[test]
-    fn standard_lists_still_parse_as_standard() {
+    fn rules_repeated_across_lists_are_left_out() {
+        let lists = || vec![
+            ("||ads.example.com^\n||cdn.example.com/ad.js\nexample.com##.ad\n! comment".to_string(), false),
+            ("! comment\n||ads.example.com^\n||cdn.example.com/ad.js\nexample.com##.ad\n||new.example.org^".to_string(), false),
+            ("# hosts\n0.0.0.0 ads.example.com\n0.0.0.0 tracker.example.net\n127.0.0.1 localhost".to_string(), false),
+        ];
+
+        // Each repeat costs space when kept
         let mut set = FilterSet::new(false);
-        add_list(&mut set, "! Title: test\n||ads.example.com^$third-party".into(), false);
-        let engine = Engine::new_with_filter_set(set);
+        for (text, _) in lists() {
+            let format = if is_hosts(&text) { FilterFormat::Hosts } else { FilterFormat::Standard };
+            set.add_filter_list(text, ParseOptions { format, ..Default::default() });
+        }
+        let every_copy = Engine::new_with_filter_set(set).serialize().len();
+        let engine     = engine_from(lists());
+        assert!(engine.serialize().len() < every_copy, "repeats are left out");
+
+        // And everything still blocks and hides as before
+        let check = |u: &str| engine.check_network_request(&AdRequest::new(u, "https://site.com", "script", "GET").unwrap()).should_block();
+        for url in ["https://ads.example.com/a.js", "https://cdn.example.com/ad.js", "https://new.example.org/x", "https://tracker.example.net/p"] {
+            assert!(check(url), "{url}");
+        }
+        assert!(!check("https://site.com/a.js"));
+        assert!(engine.url_cosmetic_resources("https://example.com/").hide_selectors.contains(".ad"));
+    }
+
+    #[test]
+    fn a_hosts_line_is_the_same_rule_as_its_site_rule() {
+        use adblock::filters::network::NetworkFilter;
+        let site  = NetworkFilter::parse("||ads.example.com^", false, Default::default()).unwrap();
+        let hosts = NetworkFilter::parse_hosts_style("ads.example.com", false).unwrap();
+        assert_eq!(site.mask, hosts.mask, "same request types and parties");
+        assert_eq!(site.get_id(), hosts.get_id());
+        assert!(rule_key("0.0.0.0 ads.example.com", true, false) == rule_key("||ads.example.com^", false, true));
+
+        // Only plain names: anything else is left to adblock-rust as written
+        for (line, hosts) in [("127.0.0.1 localhost", true), ("# 0.0.0.0 a.com", true), ("0.0.0.0 a.com # note", true), ("0.0.0.0 Ads.example.com", true), ("! comment", false), ("", false)] {
+            assert!(!matches!(rule_key(line, hosts, false), Some(RuleKey::Site(_))), "{line}");
+        }
+        assert!(rule_key("||ads.example.com^$third-party", false, false) == Some(RuleKey::Network("||ads.example.com^$third-party")));
+    }
+
+    #[test]
+    fn trusted_scriptlets_survive_an_untrusted_copy() {
+        // The same scriptlet in an untrusted list first, then a trusted one: only the trusted copy may run it
+        let rule       = "a.com##+js(trusted-click-element, button)";
+        let mut engine = engine_from(vec![(rule.into(), false), (rule.into(), true)]);
+        let library    = r#"{"version":"1","scriptlets":[{"names":["trusted-click-element"],"scriptlet":"function t(source,args){window.__clicked=args}"}]}"#;
+        engine.use_resources(cosmetic::scriptlet_resources(library));
+        let tags = cosmetic::page_tags(&engine, &[], "https://a.com/", "N", None).expect("the trusted copy runs");
+        assert!(String::from_utf8_lossy(&tags).contains("cf_trusted_click_element"));
+    }
+
+    #[test]
+    fn a_saved_engine_with_a_million_rules_loads() {
+        // adblock-rust 0.13.3 refused to load a saved engine past a million rules (TooManyTables),
+        // so every start compiled the lists again (1.5 s of CPU, 200 MB at the peak)
+        let list: String = (0..1_100_000).map(|i| format!("||s{i}.example.com^\n")).collect();
+        let saved        = engine_from(vec![(list, false)]).serialize();
+        let mut engine   = Engine::default();
+        engine.deserialize(&saved).expect("a big saved engine loads");
+        assert!(engine.check_network_request(&AdRequest::new("https://s1099999.example.com/", "https://site.com", "script", "GET").unwrap()).should_block());
+    }
+
+    #[test]
+    fn standard_lists_still_parse_as_standard() {
+        let engine = engine_from(vec![("! Title: test\n||ads.example.com^$third-party".into(), false)]);
         let req    = AdRequest::new("https://ads.example.com/a.js", "https://site.com", "script", "GET").unwrap();
         assert!(engine.check_network_request(&req).should_block());
     }

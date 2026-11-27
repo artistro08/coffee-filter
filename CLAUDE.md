@@ -27,6 +27,7 @@ The core restores the user's proxy settings on stop, crash, logoff, and shutdown
 - `core/src/pressure.rs` — efficiency mode off, below-normal parsing, low-memory handling
 - `core/src/problems.rs`, `config.rs` — connection problems, settings (`config.json`), atomic writes
 - `core/build.rs` — puts the coffee icon into the core exe (needs `rc.exe` from the Windows SDK)
+- `core/benches/hot_paths.rs` — `cargo bench` (divan via `codspeed-divan-compat`, local only): block decision, page tags, generic rules, `$jsonprune`, AdGuard translation, host checks, engine build/load/size, with times and allocations. Uses a copy of this PC's lists in `%TEMP%\cf-bench` (delete it to pick up new lists); includes the `src/` files as modules, so items it calls must be `pub`
 - `app/App.xaml.cs` — core lifecycle, `coffee-filter://` links, tray, flyout, shortcuts, problem notifications, efficiency mode while hidden
 - `app/FlyoutWindow.xaml(.cs)`, `FlyoutChrome.cs` — the tray flyout (left-click or shortcut): see-through window, always-active acrylic, slides out of the taskbar on any edge (ported from MagicBuds)
 - `app/Shortcuts.cs`, `Hotkey.cs` — global shortcuts (`RegisterHotKey` on a hidden window, which also hears Windows shutting down) and the picker's keyboard hook
@@ -76,6 +77,8 @@ In order, stopping at the first failure:
 3. `cargo test --release -- --ignored` in `core/` (end-to-end: real proxy on port 18229, real Chrome, briefly changes and restores the system proxy)
 4. `dotnet test` in `tests/CoffeeFilter.Tests` (app-to-core)
 5. `dotnet test` in `tests/CoffeeFilter.UITests` (UI, against the installed app; the script refuses if the installed version isn't the one in the manifest)
+
+For performance work, run `cargo bench` in `core/` before and after a change (not part of `test.ps1`; nothing is uploaded).
 
 UI tests open pages, groups, and dialogs and cancel them. One test (`ExcludingAStoreAppListsItAndDeleteRemovesIt`) excludes a Store app the user hasn't excluded and deletes it again, undoing in `finally` and failing loudly if it can't. Launching the app also turns blocking on if it was on last time. `AppFixture` turns on **Show tray icon** and **Use tray flyout** for the run if the owner turned them off, and off again at the end. They need a few Store apps installed.
 

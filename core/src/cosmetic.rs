@@ -191,12 +191,11 @@ pub fn scriptlet_resources(json: &str) -> Vec<Resource> {
 /// written as `\x3C`, which means the same thing inside JS strings, templates, and regexes.
 /// Without this, a scriptlet argument from any filter list could close our tag and add its own.
 pub fn escape_script(js: &str) -> String {
-    // ASCII lowercasing keeps every byte offset, so positions found in `lower` fit `js`
-    let lower   = js.to_ascii_lowercase();
-    let mut out = String::with_capacity(js.len());
+    let mut out  = String::with_capacity(js.len());
     let mut last = 0;
-    for (at, _) in lower.match_indices('<') {
-        if lower[at..].starts_with("</script") || lower[at..].starts_with("<!--") {
+    for (at, _) in js.match_indices('<') {
+        let rest = &js.as_bytes()[at..];
+        if rest.get(..8).is_some_and(|tag| tag.eq_ignore_ascii_case(b"</script")) || rest.starts_with(b"<!--") {
             out.push_str(&js[last..at]);
             out.push_str("\\x3C");
             last = at + 1;
@@ -206,25 +205,21 @@ pub fn escape_script(js: &str) -> String {
     out
 }
 
-fn script_tag(js: &str, nonce: &str) -> String {
-    format!("<script nonce=\"{nonce}\">{}</script>", escape_script(js))
-}
-
 /// The `<style>` and `<script>` for one page, plus one `<script>` per userscript (so a
 /// broken one can't stop the rest), or None when nothing applies. With an `endpoint`, the
 /// script also asks there for generic class and id rules (generic.js), unless the page is
 /// excepted from them (`$generichide`).
-fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str, endpoint: Option<&str>) -> Option<Bytes> {
+pub fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str, endpoint: Option<&str>) -> Option<Bytes> {
     let resources = engine.url_cosmetic_resources(url);
 
     // One CSS rule per selector, so one bad selector can't void the rest. Anything that
-    // could close the <style> tag is dropped.
-    let css: String = resources
-        .hide_selectors
-        .iter()
-        .filter(|s| !s.contains(['<', '{', '}']))
-        .map(|s| format!("{s}{{display:none!important}}\n"))
-        .collect();
+    // could close the <style> tag is dropped. Pages get thousands, so they're written into one
+    // string instead of one each.
+    let mut css = String::new();
+    for selector in resources.hide_selectors.iter().filter(|s| !s.contains(['<', '{', '}'])) {
+        css.push_str(selector);
+        css.push_str("{display:none!important}\n");
+    }
 
     let procedural: Vec<serde_json::Value> = resources
         .procedural_actions
@@ -248,16 +243,18 @@ fn page_tags(engine: &Engine, userscripts: &[&str], url: &str, nonce: &str, endp
         return None;
     }
 
-    let mut tags = String::new();
+    // Written straight into one string sized for all of it: userscripts can be hundreds of KB
+    use std::fmt::Write;
+    let mut tags = String::with_capacity(css.len() + js.len() + userscripts.iter().map(|s| s.len()).sum::<usize>() + 64 * (userscripts.len() + 2));
     if !css.is_empty() {
-        tags.push_str(&format!("<style nonce=\"{nonce}\">{css}</style>"));
+        let _ = write!(tags, "<style nonce=\"{nonce}\">{css}</style>");
     }
     if !js.is_empty() {
-        tags.push_str(&script_tag(&js, nonce));
+        let _ = write!(tags, "<script nonce=\"{nonce}\">{}</script>", escape_script(&js));
     }
     // Userscripts were escaped once when loaded; only the tag is added per page
     for script in userscripts {
-        tags.push_str(&format!("<script nonce=\"{nonce}\">{script}</script>"));
+        let _ = write!(tags, "<script nonce=\"{nonce}\">{script}</script>");
     }
     Some(Bytes::from(tags))
 }
@@ -836,5 +833,8 @@ mod tests {
             assert!(!inner.contains("</script") && !inner.contains("<!--"), "{url}: {tags}");
         }
         assert_eq!(escape_script("a</ScRiPt>b<!--c</x"), "a\\x3C/ScRiPt>b\\x3C!--c</x");
+        assert_eq!(escape_script("é</SCRIPT"), "é\\x3C/SCRIPT", "at the very end, after a multibyte letter");
+        assert_eq!(escape_script("<</script<!--"), "<\\x3C/script\\x3C!--");
+        assert_eq!(escape_script("</scrip <!- x<y"), "</scrip <!- x<y", "only the two dangerous openings");
     }
 }

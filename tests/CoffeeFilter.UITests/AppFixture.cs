@@ -27,23 +27,26 @@ public sealed class AppFixture : IDisposable
     private readonly System.Drawing.Rectangle _originalBounds;
     private readonly List<string> _turnedOn = [];
 
-    public Window Window { get; }
+    private readonly string _family = PackageFamilyName();
+
+    /// <summary>
+    /// The main window; a new one after <see cref="ReopenWindow"/>.
+    /// </summary>
+    public Window Window { get; private set; }
+
+    /// <summary>
+    /// The running app, for checking its memory.
+    /// </summary>
+    public Process AppProcess { get; }
 
     public AppFixture()
     {
-        // Launching again while it runs just brings the window back (single instance)
-        var family = PackageFamilyName();
-        void Launch() => Process.Start(new ProcessStartInfo("explorer.exe", $"shell:AppsFolder\\{family}!App") { UseShellExecute = true })?.WaitForExit();
         Launch();
-
-        var process = Retry.WhileNull(() => Process.GetProcessesByName("CoffeeFilter").FirstOrDefault(), TimeSpan.FromSeconds(20)).Result
+        AppProcess = Retry.WhileNull(() => Process.GetProcessesByName("CoffeeFilter").FirstOrDefault(), TimeSpan.FromSeconds(20)).Result
             ?? throw new InvalidOperationException("Coffee Filter didn't start.");
-        _app = Application.Attach(process);
+        _app = Application.Attach(AppProcess);
 
-        // By name: the tray flyout is a window of its own. Started fresh, it opens in the tray
-        // (unless Show window at launch is on), so open it again for the window
-        Window? MainWindow(TimeSpan wait) =>
-            Retry.WhileNull(() => _app.GetAllTopLevelWindows(_automation).FirstOrDefault(w => w.Name == "Coffee Filter"), wait).Result;
+        // Started fresh, it opens in the tray (unless Show window at launch is on), so open it again for the window
         var window = MainWindow(TimeSpan.FromSeconds(5));
         if (window is null)
         {
@@ -51,9 +54,7 @@ public sealed class AppFixture : IDisposable
             window = MainWindow(TimeSpan.FromSeconds(20));
         }
         Window = window ?? throw new InvalidOperationException("Coffee Filter's window didn't open.");
-
-        // Wait for the filter lists to load (the main page shows its sections then)
-        Retry.WhileNull(() => Window.FindFirstDescendant(c => c.ByName("Protection")), TimeSpan.FromSeconds(60), throwOnTimeout: true);
+        WaitForLists();
         _originalBounds = Window.BoundingRectangle;
 
         // Turn On What the Tests Need
@@ -64,6 +65,46 @@ public sealed class AppFixture : IDisposable
                 _turnedOn.Add(name);
             }
         }
+    }
+
+    /// <summary>
+    /// Launching again while it runs just brings the window back (single instance).
+    /// </summary>
+    private void Launch() => Process.Start(new ProcessStartInfo("explorer.exe", $"shell:AppsFolder\\{_family}!App") { UseShellExecute = true })?.WaitForExit();
+
+    /// <summary>
+    /// By name: the tray flyout and tray menu are windows of their own. A window that's
+    /// closing can't say its name, so that's skipped rather than failing.
+    /// </summary>
+    private Window? MainWindow(TimeSpan wait) =>
+        Retry.WhileNull(() => _app.GetAllTopLevelWindows(_automation).FirstOrDefault(w => w.Name == "Coffee Filter"), wait, ignoreException: true).Result;
+
+    /// <summary>
+    /// Wait for the filter lists to load (the main page shows its sections then).
+    /// </summary>
+    private void WaitForLists() =>
+        Retry.WhileNull(() => Window.FindFirstDescendant(c => c.ByName("Protection")), TimeSpan.FromSeconds(60), throwOnTimeout: true);
+
+    /// <summary>
+    /// Close the window (the app stays running in the tray) and wait until it's gone.
+    /// </summary>
+    public void CloseWindow()
+    {
+        Window.Close();
+        if (!Retry.WhileFalse(() => MainWindow(TimeSpan.Zero) is null, TimeSpan.FromSeconds(5)).Success)
+        {
+            throw new InvalidOperationException("Coffee Filter's window didn't close.");
+        }
+    }
+
+    /// <summary>
+    /// Open the window again the way you would, from the Start menu, after <see cref="CloseWindow"/>.
+    /// </summary>
+    public void ReopenWindow()
+    {
+        Launch();
+        Window = MainWindow(TimeSpan.FromSeconds(20)) ?? throw new InvalidOperationException("Coffee Filter's window didn't open again.");
+        WaitForLists();
     }
 
     /// <summary>

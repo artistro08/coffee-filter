@@ -72,33 +72,52 @@ public sealed partial class MainWindow : Window
         // Bind to Event Listeners
         _app.Changed   += OnChanged;
         _app.Failed    += ShowError;
-        _timer.Tick    += async (_, _) => await PollStatusAsync();
-        _logTimer.Tick += async (_, _) => await PollLogAsync();
-        // Only poll while the window is in focus, so it costs nothing in the background
-        Activated      += (_, e) =>
-        {
-            _active    = e.WindowActivationState != WindowActivationState.Deactivated;
-            var polled = _active && _app.Last is not null;
-            if (polled) { _timer.Start(); } else { _timer.Stop(); }
-            if (polled && LogView.Visibility == Visibility.Visible) { _logTimer.Start(); } else { _logTimer.Stop(); }
-        };
-        Closed         += (_, _) =>
-        {
-            _timer.Stop();
-            _logTimer.Stop();
-            _app.Changed -= OnChanged;
-            _app.Failed  -= ShowError;
-            SaveSize();
-            // Stop the core recording blocked requests nobody is watching
-            if (LogView.Visibility == Visibility.Visible)
-            {
-                _ = _app.RunAsync("log_stop", showErrors: false);
-            }
-        };
+        _timer.Tick    += OnStatusTick;
+        _logTimer.Tick += OnLogTick;
+        Activated      += OnWindowActivated;
+        Closed         += OnWindowClosed;
 
         if (_app.Last is { } last)
         {
             OnChanged(last, lists: true);
+        }
+    }
+
+    private async void OnStatusTick(object? sender, object e) => await PollStatusAsync();
+
+    private async void OnLogTick(object? sender, object e) => await PollLogAsync();
+
+    /// <summary>
+    /// Only poll while the window is in focus, so it costs nothing in the background.
+    /// </summary>
+    private void OnWindowActivated(object sender, WindowActivatedEventArgs e)
+    {
+        _active    = e.WindowActivationState != WindowActivationState.Deactivated;
+        var polled = _active && _app.Last is not null;
+        if (polled) { _timer.Start(); } else { _timer.Stop(); }
+        if (polled && LogView.Visibility == Visibility.Visible) { _logTimer.Start(); } else { _logTimer.Stop(); }
+    }
+
+    /// <summary>
+    /// Unhooks every handler on the window and its timers. They aren't part of the UI tree, so
+    /// a handler left on them keeps this whole window (and its UI tree) in memory after it
+    /// closes: each open and close of the window kept another ~12 MB.
+    /// </summary>
+    private void OnWindowClosed(object sender, WindowEventArgs e)
+    {
+        _timer.Stop();
+        _logTimer.Stop();
+        _timer.Tick    -= OnStatusTick;
+        _logTimer.Tick -= OnLogTick;
+        Activated      -= OnWindowActivated;
+        Closed         -= OnWindowClosed;
+        _app.Changed   -= OnChanged;
+        _app.Failed    -= ShowError;
+        SaveSize();
+        // Stop the core recording blocked requests nobody is watching
+        if (LogView.Visibility == Visibility.Visible)
+        {
+            _ = _app.RunAsync("log_stop", showErrors: false);
         }
     }
 

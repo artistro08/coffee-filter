@@ -25,6 +25,7 @@ public partial class App : Application
     private FlyoutWindow? _flyout;
     private readonly List<Problem> _found = [];
     private DispatcherQueueTimer? _foundTimer;
+    private DispatcherQueueTimer? _releaseTimer;
     private bool _running;
     private bool _quitting;
     // Opened by a web page's link or at sign-in: no automatic certificate setup (a site must never
@@ -434,8 +435,35 @@ public partial class App : Application
     // WINDOW
     // =========================================================================
 
+    private bool _controlResources;
+
+    /// <summary>
+    /// The WinUI control styles and the key caps' styles, loaded with the first window (main
+    /// window, flyout, or tray menu) rather than at launch: at sign-in the app starts in the
+    /// tray and may never open one.
+    /// </summary>
+    private void LoadControlResources()
+    {
+        if (_controlResources)
+        {
+            return;
+        }
+        try
+        {
+            Resources.MergedDictionaries.Add(new Microsoft.UI.Xaml.Controls.XamlControlsResources());
+            Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("ms-appx:///KeyVisual.xaml") });
+            _controlResources = true;
+        }
+        catch (Exception ex)
+        {
+            // Unstyled beats not opening; tried again with the next window
+            LogError(ex);
+        }
+    }
+
     public void ShowWindow()
     {
+        LoadControlResources();
         SetBackground(false);
         if (_window is null)
         {
@@ -444,9 +472,6 @@ public partial class App : Application
             {
                 _window = null;
                 SetBackground(true);
-                // Release the UI tree and hand the freed memory back to Windows while in the tray
-                _dispatcher?.TryEnqueue(DispatcherQueuePriority.Low, () =>
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true));
             };
         }
         _window.Activate();
@@ -465,7 +490,8 @@ public partial class App : Application
     /// With no window open, the app only keeps the tray icon and watches the core, so it runs
     /// in efficiency mode at low priority and stays out of the way when the PC is busy. Opening
     /// the window or the tray menu puts it back to normal right away. (Blocking itself runs in
-    /// the core, which is never slowed down.)
+    /// the core, which is never slowed down.) Going to the tray also frees what the closed
+    /// window used and hands its memory back to Windows.
     /// </summary>
     public void SetBackground(bool background)
     {
@@ -473,6 +499,16 @@ public partial class App : Application
         {
             return;
         }
+        // A moment later, once the closed window is torn down; opening one first cancels it
+        if (_releaseTimer is null)
+        {
+            _releaseTimer             = _dispatcher!.CreateTimer();
+            _releaseTimer.Interval    = TimeSpan.FromSeconds(2);
+            _releaseTimer.IsRepeating = false;
+            _releaseTimer.Tick       += (_, _) => ReleaseMemory();
+        }
+        if (background) { _releaseTimer.Start(); } else { _releaseTimer.Stop(); }
+
         var state = new Native.PowerThrottlingState
         {
             Version     = 1,
@@ -484,6 +520,17 @@ public partial class App : Application
             Native.SetProcessInformation(Native.GetCurrentProcess(), Native.ProcessPowerThrottling, &state, (uint)sizeof(Native.PowerThrottlingState));
         }
         Native.SetPriorityClass(Native.GetCurrentProcess(), background ? Native.BelowNormalPriorityClass : Native.NormalPriorityClass);
+    }
+
+    /// <summary>
+    /// Collect the closed window's UI tree, then trim the working set: what the window used
+    /// stays out of RAM (about 160 MB down to about 15) until a window needs it again, which
+    /// Windows would otherwise do only when RAM runs low.
+    /// </summary>
+    private static void ReleaseMemory()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        Native.EmptyWorkingSet(Native.GetCurrentProcess());
     }
 
     /// <summary>
@@ -581,6 +628,7 @@ public partial class App : Application
         }
         try
         {
+            LoadControlResources();
             (_flyout ??= new FlyoutWindow()).Toggle(atCursor);
         }
         catch (Exception ex)
@@ -634,6 +682,7 @@ public partial class App : Application
     {
         if (_trayMenu is null)
         {
+            LoadControlResources();
             _trayMenu = new TrayMenu(ShowWindow, async () => await RunAsync(_running ? "stop" : "start"), Quit);
             if (Last?.Status is { } s)
             {

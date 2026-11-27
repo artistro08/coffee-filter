@@ -135,4 +135,8 @@ internal static unsafe partial class Native
 
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     public static partial nint GetModuleHandleW(string? name);
+
+    [LibraryImport("psapi.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyWorkingSet(nint process);
 }

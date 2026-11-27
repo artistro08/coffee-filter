@@ -5,12 +5,6 @@
     xmlns:tray="using:H.NotifyIcon">
     <Application.Resources>
         <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
-                <!-- Key Caps (the shortcut picker) -->
-                <ResourceDictionary Source="KeyVisual.xaml" />
-            </ResourceDictionary.MergedDictionaries>
-
             <!-- Tray Commands (the right-click menu itself lives in TrayMenu.cs) -->
             <XamlUICommand x:Key="OpenCommand" />
             <XamlUICommand x:Key="MenuCommand" />
