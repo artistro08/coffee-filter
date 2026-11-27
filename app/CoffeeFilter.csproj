@@ -89,6 +89,8 @@
         <Content Include="Assets\coffee.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\tray-white.ico" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\tray-black.ico" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\tray-solid-white.ico" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\tray-solid-black.ico" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <!-- Rust Core: cargo's build (core\target\release) is copied to obj and bundled from there, so

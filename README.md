@@ -48,7 +48,7 @@ You can add userscripts, the `.user.js` scripts Tampermonkey, Greasemonkey, and 
 
 ### Tray Flyout and Shortcuts
 
-Click the tray icon (or press **Win+Alt+C**) for a small flyout with the **Ad blocking** switch, **Update lists**, **Excluded sites** (type a site and press **Add** to exclude it), and a **Settings** button that opens the window. **Excluded apps** shows how many apps you've excluded, and **Add app** opens the window with the program or Store app picker. It slides out of the taskbar wherever your taskbar is, like Windows' own flyouts. Right-click the icon for **Open**, **Ad blocking**, and **Quit**. Rather skip the flyout? Turn off **Use tray flyout** under **App**, and the icon and shortcut open the window instead.
+Click the tray icon (or press **Win+Alt+C**) for a small flyout with the **Ad blocking** switch, **Update lists**, **Excluded sites** (type a site and press **Add** to exclude it), and a **Settings** button that opens the window. **Excluded apps** shows how many apps you've excluded, and **Add app** opens the window with the program or Store app picker. It slides out of the taskbar wherever your taskbar is, like Windows' own flyouts. Right-click the icon for **Open**, **Ad blocking**, and **Quit**. Rather skip the flyout? Turn off **Use tray flyout** under **App**, and the icon and shortcut open the window instead. Pick an **Outline** or **Solid** icon under **Tray icon style**.
 
 Under **Shortcuts**, you can set keyboard shortcuts that work anywhere in Windows: open the flyout, turn ad blocking on or off, update filter lists, and open Coffee Filter. Click a shortcut and press the keys you want. If Windows or another app already uses them, Coffee Filter says so.
 
@@ -229,7 +229,7 @@ That's it! Closing the window keeps blocking running in the background, with a t
 - `%LOCALAPPDATA%\CoffeeFilter\engine.dat`, `engine.key` — saved compiled filter engine
 - `%LOCALAPPDATA%\CoffeeFilter\proxy-backup.json` — your proxy settings while blocking is on
 - `%LOCALAPPDATA%\CoffeeFilter\problems.json` — connections Coffee Filter broke, for troubleshooting
-- `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon, flyout, window at launch, blocking on or off, shortcuts, certificate setup version)
+- `%LOCALAPPDATA%\CoffeeFilter\app.json` — app preferences (tray icon and its style, flyout, window at launch, blocking on or off, shortcuts, certificate setup version)
 - `%LOCALAPPDATA%\CoffeeFilter\app-errors.log` — app errors, if any
 - `%LOCALAPPDATA%\CoffeeFilter\debug.log` — while **Detailed logs** is on (under **App**): every connection (decrypted or passed through, and why), every request (blocked or allowed), and every page (filtered, or why not). Addresses leave out anything after a `?`. It starts over past 10 MB, keeping the last one as `debug.old.log`.
 

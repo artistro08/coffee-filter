@@ -61,10 +61,11 @@ public sealed partial class MainWindow : Window
             OneRow(expander);
         }
 
-        TraySwitch.IsOn       = _app.Settings.ShowTrayIcon;
-        FlyoutSwitch.IsOn     = _app.Settings.UseFlyout;
-        LaunchSwitch.IsOn     = _app.Settings.ShowWindowAtLaunch;
-        AboutCard.Description = $"Version {App.Version}";
+        TraySwitch.IsOn             = _app.Settings.ShowTrayIcon;
+        TrayStyleBox.SelectedIndex  = _app.Settings.SolidTrayIcon ? 1 : 0;
+        FlyoutSwitch.IsOn           = _app.Settings.UseFlyout;
+        LaunchSwitch.IsOn           = _app.Settings.ShowWindowAtLaunch;
+        AboutCard.Description       = $"Version {App.Version}";
         BuildShortcuts();
         _ = ShowStartupAsync(Startup.GetAsync());
 
@@ -410,6 +411,19 @@ public sealed partial class MainWindow : Window
         _app.Settings.ShowTrayIcon = TraySwitch.IsOn;
         _app.Settings.Save();
         _app.SetTrayVisible(TraySwitch.IsOn);
+    }
+
+    private void OnTrayStyleChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Set once when the window opens; nothing changed, nothing to save
+        var solid = TrayStyleBox.SelectedIndex == 1;
+        if (_app.Settings.SolidTrayIcon == solid)
+        {
+            return;
+        }
+        _app.Settings.SolidTrayIcon = solid;
+        _app.Settings.Save();
+        _app.UpdateTrayIcon();
     }
 
     /// <summary>

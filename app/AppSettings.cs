@@ -14,6 +14,11 @@ public class AppSettings
     public bool ShowTrayIcon { get; set; } = true;
 
     /// <summary>
+    /// Whether the tray icon is the solid version; off is the outline one.
+    /// </summary>
+    public bool SolidTrayIcon { get; set; }
+
+    /// <summary>
     /// Whether a tray click (or its shortcut) opens the flyout; off opens the window instead.
     /// </summary>
     public bool UseFlyout { get; set; } = true;

@@ -173,6 +173,16 @@
                         </toolkit:SettingsCard.HeaderIcon>
                         <ToggleSwitch x:Name="TraySwitch" AutomationProperties.Name="Show tray icon" Toggled="OnTrayToggled" />
                     </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="Tray icon style"
+                                          Description="Outline matches the other icons in the tray. Solid stands out more.">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon Glyph="&#xE790;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ComboBox x:Name="TrayStyleBox" AutomationProperties.Name="Tray icon style" SelectionChanged="OnTrayStyleChanged">
+                            <ComboBoxItem Content="Outline" />
+                            <ComboBoxItem Content="Solid" />
+                        </ComboBox>
+                    </toolkit:SettingsCard>
                     <toolkit:SettingsCard Header="Use tray flyout"
                                           Description="Clicking the tray icon opens a quick panel. Turn it off to open this window instead and use less memory.">
                         <toolkit:SettingsCard.HeaderIcon>

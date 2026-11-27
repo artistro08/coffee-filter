@@ -59,6 +59,34 @@ public sealed class WindowTests(AppFixture app)
     }
 
     [Fact]
+    public void TrayIconStyleIsSaved()
+    {
+        app.GoHome();
+        var box = Retry.WhileNull(() => app.Window.FindFirstDescendant(c => c.ByName("Tray icon style").And(c.ByControlType(ControlType.ComboBox))), TimeSpan.FromSeconds(5)).Result?.AsComboBox()
+            ?? throw new InvalidOperationException("No Tray icon style box.");
+        bool Saved()
+        {
+            using var json = AppFixture.ReadAppSettings();
+            return json.RootElement.TryGetProperty("SolidTrayIcon", out var on) && on.GetBoolean();
+        }
+        var before = Saved();
+        Assert.Equal(before ? "Solid" : "Outline", box.SelectedItem?.Name);
+        try
+        {
+            box.Select(before ? 0 : 1);
+            box.Collapse();
+            Assert.True(Retry.WhileFalse(() => Saved() != before, TimeSpan.FromSeconds(3)).Success, "the style wasn't saved");
+        }
+        finally
+        {
+            // Back the way it was
+            box.Select(before ? 1 : 0);
+            box.Collapse();
+        }
+        Assert.True(Retry.WhileFalse(() => Saved() == before, TimeSpan.FromSeconds(3)).Success, "the style wasn't put back");
+    }
+
+    [Fact]
     public void CardsKeepTheirButtonOnTheSameRowAtTheSmallestWidth()
     {
         app.GoHome();

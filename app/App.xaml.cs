@@ -100,7 +100,7 @@ public partial class App : Application
         _dispatcher            = DispatcherQueue.GetForCurrentThread();
 
         SetTrayVisible(Settings.ShowTrayIcon);
-        _uiSettings.ColorValuesChanged += (_, _) => _dispatcher.TryEnqueue(UpdateTrayIconTheme);
+        _uiSettings.ColorValuesChanged += (_, _) => _dispatcher.TryEnqueue(UpdateTrayIcon);
 
         // Notifications: a click opens the page it's about
         Notifications.Invoked += page => _dispatcher.TryEnqueue(() => Activate(new AppLink(page, "")));
@@ -623,7 +623,7 @@ public partial class App : Application
             }
         };
 
-        UpdateTrayIconTheme();
+        UpdateTrayIcon();
     }
 
     /// <summary>
@@ -682,9 +682,10 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Mono Fluent tray icon: white on a dark taskbar, black on a light one.
+    /// Mono Fluent tray icon, outline or solid (your pick): white on a dark taskbar, black on a
+    /// light one.
     /// </summary>
-    private void UpdateTrayIconTheme()
+    internal void UpdateTrayIcon()
     {
         if (_tray is null)
         {
@@ -692,7 +693,8 @@ public partial class App : Application
         }
         using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
         var light     = key?.GetValue("SystemUsesLightTheme") is 1;
-        var file      = Path.Combine(AppContext.BaseDirectory, "Assets", $"tray-{(light ? "black" : "white")}.ico");
+        var style     = Settings.SolidTrayIcon ? "tray-solid" : "tray";
+        var file      = Path.Combine(AppContext.BaseDirectory, "Assets", $"{style}-{(light ? "black" : "white")}.ico");
 
         // Loaded here and handed over ready-made. An IconSource image is converted in the
         // background, and when the tray icon was created first, it sometimes showed no icon.
